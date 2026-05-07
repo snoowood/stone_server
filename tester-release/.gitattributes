@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings even on Windows checkout —
+# CRLF would break /bin/sh inside the alpine init container.
+*.sh        text eol=lf
+*.command   text eol=lf

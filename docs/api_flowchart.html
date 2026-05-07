@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>Stone Server — Client/Server API Flow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #f0883e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    line-height: 1.6;
+  }
+  header {
+    padding: 32px 48px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    color: var(--text);
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px 48px 64px;
+  }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px 32px;
+    margin: 24px 0;
+  }
+  section h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section h2 .num {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--bg);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  section .desc {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 20px;
+  }
+  .mermaid {
+    background: #0b0f14;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .legend {
+    margin-top: 32px;
+    padding: 20px;
+    background: #0b0f14;
+    border-radius: 6px;
+    border-left: 3px solid var(--accent2);
+    font-size: 13px;
+  }
+  .legend strong { color: var(--accent2); }
+  code {
+    background: #0b0f14;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: "Consolas", "Monaco", monospace;
+    font-size: 13px;
+    color: #ffa657;
+  }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Stone Server — Client / Server API Flow</h1>
+  <p>HTTP REST · Gin · JWT(RSA) + Refresh Token · SQLite/Postgres + KV(InMem/Redis)</p>
+</header>
+
+<main>
+
+<section>
+  <h2><span class="num">1</span> 최초 접속 &amp; 로그인 (Steam 인증)</h2>
+  <p class="desc">클라이언트가 Steam ticket으로 인증을 요청하면 서버가 JWT와 refresh_token을 발급한다.</p>
+  <div class="mermaid">
+flowchart TD
+    A[클라이언트 시작] --> B[Steam SDK로<br/>auth ticket 획득]
+    B --> C["POST /api/v1/auth/steam<br/>body: ticket"]
+    C --> D{RateLimiter}
+    D -- 초과 --> D1[429 Too Many Requests]
+    D -- 통과 --> E{ticket SHA256<br/>1회용 claim}
+    E -- 이미 사용 --> E1[409 TICKET_USED]
+    E -- claim OK --> F[Steam API<br/>AuthenticateTicket]
+    F -- 무효 --> F1[401 INVALID_TICKET]
+    F -- steam_id 획득 --> G[DB upsertPlayer<br/>player_states init<br/>login streak 갱신]
+    G --> H[JWT 발급 jti=uuid]
+    H --> I{enforceSingleSession<br/>session:jti 등록}
+    I -- 충돌 --> I1[409 LOGIN_IN_PROGRESS]
+    I -- OK --> J[refresh_token 저장<br/>KV]
+    J --> K["200 OK { jwt, refresh_token, expires_at }"]
+    K --> L[클라이언트 토큰 보관]
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">2</span> 보호된 API 호출 (예: 클릭 전송)</h2>
+  <p class="desc">JWT 서명 검증 → 세션 라이브 체크 → RateLimit → 비즈니스 로직.</p>
+  <div class="mermaid">
+flowchart TD
+    A[클라이언트] -->|Authorization: Bearer JWT| B["POST /api/v1/player/clicks"]
+    B --> C{JWTAuth middleware}
+    C -- Bearer 없음 --> C1[401 UNAUTHORIZED]
+    C -- RSA pubKey 검증 --> D{서명/만료 OK?}
+    D -- 실패 --> D1[401 invalid or expired]
+    D -- OK --> E{KV 조회 session:jti}
+    E -- 없음 --> E1[401 session revoked]
+    E -- 존재 --> F{RateLimiter}
+    F -- 초과 --> F1[429]
+    F -- 통과 --> G[playerHandler.PostClicks<br/>비즈니스 로직 실행]
+    G --> H[DB 업데이트]
+    H --> I[200 OK + 결과]
+  </div>
+  <div class="legend">
+    동일 패턴이 적용되는 라우트:
+    <code>/player/state</code> <code>/gacha/pull</code> <code>/gacha/status</code>
+    <code>/gacha/logs</code> <code>/achievement/unlock</code> <code>/achievement/list</code>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">3</span> JWT 만료 → Refresh</h2>
+  <p class="desc">Refresh Token으로 새 JWT를 발급받는다. Per-player 락과 쿨다운으로 동시 갱신을 방지.</p>
+  <div class="mermaid">
+flowchart TD
+    A[API 호출 401 expired 수신] --> B["POST /api/v1/auth/refresh<br/>body: refresh_token"]
+    B --> C{lookupRefreshToken KV}
+    C -- 없음 --> C1[401 INVALID_REFRESH_TOKEN]
+    C -- player_id 확인 --> D{acquireRefreshLock<br/>per-player}
+    D -- 락 실패 --> D1[409 REFRESH_IN_PROGRESS]
+    D -- 락 획득 --> E{cooldown 중?}
+    E -- yes --> E1[409 REFRESH_IN_PROGRESS]
+    E -- no --> F{stored token == 요청 token?}
+    F -- 다름 --> F1[401 REFRESH_TOKEN_REVOKED<br/>새 로그인으로 무효화됨]
+    F -- 일치 --> G[새 JWT 발급 새 jti]
+    G --> H[enforceSingleSession]
+    H --> I[refresh cooldown 설정]
+    I --> J[새 refresh_token 저장<br/>이전 lookup 무효화]
+    J --> K["200 OK { new_jwt, new_refresh_token }"]
+    K --> L[클라이언트 토큰 교체<br/>원 API 재시도]
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">4</span> 로그아웃</h2>
+  <p class="desc">서명만 검증하고 세션을 폐기한다 (이미 revoke된 토큰도 로그아웃 가능).</p>
+  <div class="mermaid">
+flowchart TD
+    A[클라이언트] -->|Authorization: Bearer JWT| B["DELETE /api/v1/auth/logout"]
+    B --> C{JWTSignatureAuth<br/>서명만 검증}
+    C -- 실패 --> C1[401]
+    C -- OK --> D[authHandler.AuthLogout]
+    D --> E[KV에서<br/>session:jti 삭제<br/>refresh_token 삭제]
+    E --> F[200 OK]
+    F --> G[클라이언트 토큰 폐기]
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">5</span> 부팅 직후 — Public 호출 (헬스체크 / 시간 동기화)</h2>
+  <p class="desc">로그인 전에 호출 가능한 무인증 엔드포인트. 시간 동기화로 클라 타임가드 기준을 맞춤.</p>
+  <div class="mermaid">
+flowchart TD
+    A[클라이언트 부팅] --> B["GET /api/v1/health"]
+    B --> C[DB ping + KV ping]
+    C --> D[200 OK / 503]
+    A --> E["POST /api/v1/time/sync"]
+    E --> F[서버 UTC 반환]
+    F --> G[클라이언트 시간 보정<br/>타임가드 기준]
+    G --> H[시나리오 1로 진행]
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">6</span> 전체 라이프사이클 요약</h2>
+  <p class="desc">부팅 → 인증 → 플레이 루프 → 만료시 갱신 → 로그아웃.</p>
+  <div class="mermaid">
+flowchart LR
+    Boot[부팅] --> Health[/health]
+    Health --> TimeSync[/time/sync]
+    TimeSync --> Login[/auth/steam]
+    Login --> Play{게임 플레이}
+    Play -->|JWT 유효| API[보호 API 호출]
+    API --> Play
+    Play -->|JWT 만료| Refresh[/auth/refresh]
+    Refresh --> Play
+    Play -->|종료| Logout[/auth/logout]
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">★</span> 핵심 정리</h2>
+  <ul>
+    <li><strong>인증 모델:</strong> Steam ticket → JWT(RSA, 단기) + Refresh Token(KV 장기)</li>
+    <li><strong>싱글 세션:</strong> <code>session:jti</code> 키로 한 계정 1세션 강제</li>
+    <li><strong>방어 장치:</strong> ticket 1회용 claim · refresh per-player lock + cooldown · RateLimiter</li>
+    <li><strong>저장소 분기:</strong> <code>SQLITE_PATH</code> 유무에 따라 SQLite+InMem 또는 Postgres+Redis</li>
+    <li><strong>통신:</strong> 전부 HTTP/1.1 REST (소켓/WebSocket 미사용)</li>
+  </ul>
+</section>
+
+</main>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#58a6ff',
+      lineColor: '#8b949e',
+      secondaryColor: '#21262d',
+      tertiaryColor: '#161b22',
+      fontFamily: '-apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif'
+    },
+    flowchart: { curve: 'basis', padding: 16 }
+  });
+</script>
+
+</body>
+</html>

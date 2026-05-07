@@ -1,0 +1,13 @@
+# stone-server daily PostgreSQL backup — runs at 02:00 UTC.
+#
+# Install:
+#   sudo cp /opt/stone-server/scripts/backup.cron /etc/cron.d/stone-server-backup
+#   sudo chmod 644 /etc/cron.d/stone-server-backup
+#
+# Logs are appended to /var/log/stone-server-backup.log.
+# Rotate with logrotate (see scripts/stone-server-backup.logrotate).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 2 * * * root COMPOSE_DIR=/opt/stone-server /opt/stone-server/scripts/backup.sh >> /var/log/stone-server-backup.log 2>&1

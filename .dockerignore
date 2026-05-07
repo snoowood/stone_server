@@ -1,0 +1,10 @@
+.git/
+.env
+Feedback/
+Goal/
+Task/
+dashboard.html
+deploy.sh
+*.md
+nginx/certs/selfsigned.crt
+nginx/certs/selfsigned.key

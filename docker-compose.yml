@@ -1,0 +1,87 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-stone_server}
+      POSTGRES_USER: ${DB_USER:-stone}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stone} -d ${DB_NAME:-stone_server}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - SSL_CERT=${SSL_CERT:-/etc/nginx/certs/selfsigned.crt}
+      - SSL_KEY=${SSL_KEY:-/etc/nginx/certs/selfsigned.key}
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # Runs only in production (docker compose --profile production up -d).
+  # Renews Let's Encrypt certificates every 12 hours via the webroot method.
+  certbot:
+    image: certbot/certbot
+    profiles: ["production"]
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  certbot_certs:
+  certbot_www:

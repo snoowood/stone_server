@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stone Server — Task Dashboard</title>
+<style>
+:root {
+  --bg:        #0f172a;
+  --surface:   #1e293b;
+  --surface2:  #334155;
+  --border:    #334155;
+  --border2:   #475569;
+  --text:      #e2e8f0;
+  --muted:     #94a3b8;
+
+  --c-idle:    #475569;
+  --c-prog:    #2563eb;
+  --c-rev:     #d97706;
+  --c-done:    #059669;
+
+  --t-idle:    #cbd5e1;
+  --t-prog:    #bfdbfe;
+  --t-rev:     #fde68a;
+  --t-done:    #a7f3d0;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 1.5rem 2rem 1.25rem;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,.4);
+}
+.header-top { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1rem; }
+h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; }
+.header-date { font-size: 0.75rem; color: var(--muted); }
+.stats-row { display: flex; gap: 0; border: 1px solid var(--border2); border-radius: 0.5rem; overflow: hidden; width: fit-content; margin-bottom: 1rem; }
+.stat {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 0.5rem 1.25rem;
+  border-right: 1px solid var(--border2);
+}
+.stat:last-child { border-right: none; }
+.stat-num { font-size: 1.375rem; font-weight: 700; line-height: 1; }
+.stat-label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+.s-total  .stat-num { color: var(--text); }
+.s-idle   .stat-num { color: var(--c-idle); filter: brightness(1.4); }
+.s-prog   .stat-num { color: #60a5fa; }
+.s-rev    .stat-num { color: #fbbf24; }
+.s-done   .stat-num { color: #34d399; }
+
+.progress-row { display: flex; align-items: center; gap: 0.75rem; }
+.progress-track { flex: 1; background: var(--surface2); border-radius: 9999px; height: 6px; overflow: hidden; max-width: 480px; }
+.progress-fill  { height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #059669, #34d399); transition: width .5s cubic-bezier(.4,0,.2,1); }
+.progress-text  { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+
+/* ── Legend ── */
+.legend { display: flex; gap: 1rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--muted); }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Main ── */
+main { padding: 1.75rem 2rem 3rem; max-width: 1320px; margin: 0 auto; }
+
+/* ── Phase ── */
+.phase { margin-bottom: 2rem; }
+.phase-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s;
+}
+.phase-header:hover { border-color: var(--border2); }
+.phase-left { display: flex; align-items: center; gap: 0.75rem; }
+.phase-arrow { color: var(--muted); font-size: 0.75rem; transition: transform .2s; }
+.phase-arrow.open { transform: rotate(90deg); }
+.phase-name { font-size: 0.9rem; font-weight: 600; }
+.phase-goal { font-size: 0.72rem; color: var(--muted); }
+.phase-right { display: flex; align-items: center; gap: 0.75rem; }
+.phase-prog-wrap { display: flex; align-items: center; gap: 0.5rem; }
+.phase-prog-track { width: 80px; height: 4px; background: var(--surface2); border-radius: 9999px; overflow: hidden; }
+.phase-prog-fill  { height: 100%; border-radius: 9999px; background: #34d399; transition: width .4s; }
+.phase-count { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+
+/* ── Grid ── */
+.tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 0.75rem;
+}
+.tasks-grid.collapsed { display: none; }
+
+/* ── Card ── */
+.task-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+.task-card:hover { border-color: var(--border2); box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.task-card.status-0 { border-left: 3px solid var(--c-idle); }
+.task-card.status-1 { border-left: 3px solid var(--c-prog); }
+.task-card.status-2 { border-left: 3px solid var(--c-rev); }
+.task-card.status-3 { border-left: 3px solid var(--c-done); }
+
+.card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
+.card-id { font-family: 'Courier New', monospace; font-size: 0.7rem; color: var(--muted); font-weight: 700; letter-spacing: .04em; margin-bottom: 2px; }
+.card-title { font-size: 0.855rem; font-weight: 600; line-height: 1.35; }
+
+.status-btn {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity .15s, transform .1s;
+}
+.status-btn:hover  { opacity: .85; }
+.status-btn:active { transform: scale(.95); }
+.status-btn.s0 { background: var(--c-idle); color: var(--t-idle); }
+.status-btn.s1 { background: var(--c-prog); color: var(--t-prog); }
+.status-btn.s2 { background: var(--c-rev);  color: var(--t-rev);  }
+.status-btn.s3 { background: var(--c-done); color: var(--t-done); }
+
+/* ── Meta ── */
+.card-meta { display: flex; flex-direction: column; gap: 0.3rem; }
+.meta-row { display: flex; align-items: flex-start; gap: 0.4rem; flex-wrap: wrap; font-size: 0.7rem; }
+.meta-label { color: var(--muted); font-weight: 700; flex-shrink: 0; min-width: 2.5rem; }
+.dep-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.66rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.dep-chip:hover { border-color: #60a5fa; color: #93c5fd; }
+
+/* ── Review ── */
+.review-toggle {
+  background: none; border: none;
+  color: var(--muted); cursor: pointer;
+  font-size: 0.7rem;
+  text-align: left;
+  padding: 0;
+  display: flex; align-items: center; gap: 0.3rem;
+}
+.review-toggle:hover { color: var(--text); }
+.review-arrow { transition: transform .2s; display: inline-block; }
+.review-arrow.open { transform: rotate(90deg); }
+.review-list { display: none; margin-top: 0.3rem; }
+.review-list.open { display: block; }
+.review-item {
+  display: flex; gap: 0.4rem; align-items: flex-start;
+  padding: 0.28rem 0;
+  border-bottom: 1px solid var(--surface2);
+  font-size: 0.7rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.review-item:last-child { border-bottom: none; }
+.check { flex-shrink: 0; cursor: pointer; font-size: 0.75rem; margin-top: 1px; transition: color .15s; }
+.check:hover { color: var(--t-done); }
+.check.checked { color: var(--c-done); }
+.review-text { flex: 1; }
+.review-text.checked { text-decoration: line-through; color: var(--surface2); filter: brightness(1.5); }
+
+/* ── Scroll to ── */
+:target { scroll-margin-top: 120px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-top">
+    <h1>Stone Server — Task Dashboard</h1>
+    <span class="header-date" id="hdate"></span>
+  </div>
+  <div class="stats-row">
+    <div class="stat s-total"><span class="stat-num" id="cnt-total">29</span><span class="stat-label">전체</span></div>
+    <div class="stat s-idle"> <span class="stat-num" id="cnt-0">—</span><span class="stat-label">미진행</span></div>
+    <div class="stat s-prog"> <span class="stat-num" id="cnt-1">—</span><span class="stat-label">진행 중</span></div>
+    <div class="stat s-rev">  <span class="stat-num" id="cnt-2">—</span><span class="stat-label">리뷰 중</span></div>
+    <div class="stat s-done"> <span class="stat-num" id="cnt-3">—</span><span class="stat-label">완료</span></div>
+  </div>
+  <div class="progress-row">
+    <div class="progress-track"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
+    <span class="progress-text" id="prog-text">완료 0 / 29 (0%)</span>
+  </div>
+  <div class="legend">
+    <span class="legend-item"><span class="legend-dot" style="background:var(--c-idle)"></span>미진행</span>
+    <span class="legend-item"><span class="legend-dot" style="background:var(--c-prog)"></span>진행 중</span>
+    <span class="legend-item"><span class="legend-dot" style="background:var(--c-rev)"></span>리뷰 중</span>
+    <span class="legend-item"><span class="legend-dot" style="background:var(--c-done)"></span>완료</span>
+    <span class="legend-item" style="margin-left:auto;font-size:.68rem">상태 배지 클릭 → 상태 변경 &nbsp;|&nbsp; 의존성 칩 클릭 → 해당 Task로 이동</span>
+  </div>
+</header>
+
+<main id="main"></main>
+
+<script>
+const LS_KEY  = 'stone-server-tasks-v41';
+const LS_CHK  = 'stone-server-checks-v30';
+const DEFAULT_STATUS_MAP = { 'T1-01': 3, 'T1-02': 3, 'T1-03': 3, 'T1-04': 3, 'T1-05': 3, 'T1-06': 3, 'T1-07': 3, 'T1-08': 3, 'T1-09': 3, 'T1-10': 3, 'T1-11': 3, 'T2-01': 3, 'T2-02': 3, 'T2-03': 3, 'T2-04': 3, 'T2-05': 3, 'T3-01': 3, 'T3-02': 3, 'T3-03': 3, 'T3-04': 3, 'T4-01': 3, 'T4-02': 3, 'T4-03': 3, 'T4-04': 3, 'T4-05': 3, 'T5-01': 3, 'T5-02': 3, 'T5-03': 3, 'T5-04': 3 };
+const STATUSES = ['미진행', '진행 중', '리뷰 중', '완료'];
+const S_CLASS  = ['s0', 's1', 's2', 's3'];
+
+const PHASES = [
+  { num:1, name:'Phase 1 — 인프라 + 인증 기반',            goal:'서버가 실제로 뜨고 Steam 로그인이 작동하며 기본 운영 도구가 갖춰진 상태' },
+  { num:2, name:'Phase 2 — 시간 검증 + 플레이어 상태 동기화', goal:'게임 상태를 서버에서 관리하고 시간/클릭 어뷰징 차단' },
+  { num:3, name:'Phase 3 — 가챠 시스템 서버화',             goal:'가챠 결과를 서버에서 결정하고 쿨다운 강제 적용' },
+  { num:4, name:'Phase 4 — Steam 업적 시스템',              goal:'조건 검증 후 서버에서 Steam 업적 unlock' },
+  { num:5, name:'Phase 5 — 운영 안정화',                    goal:'라이브 배포 전 운영 필수 항목 완비' },
+];
+
+const TASKS = [
+  /* ─── Phase 1 ─── */
+  { id:'T1-01', phase:1, title:'Go 프로젝트 초기화',
+    pre:[], next:['T1-02','T1-03'],
+    review:['go build ./... 오류 없이 통과','디렉토리 구조 00_overview.md와 일치','Dockerfile 빌드 성공, 불필요한 파일 미포함'] },
+  { id:'T1-02', phase:1, title:'환경변수 관리 + 구조화 로깅',
+    pre:['T1-01'], next:['T1-03','T1-05','T1-07'],
+    review:['.env 없이 실행 시 명확한 오류 후 종료','요청 로그에 player_id, status, latency 포함','민감값(JWT_PRIVATE_KEY 등) 로그 미출력 확인','.env 파일이 .gitignore에 포함'] },
+  { id:'T1-03', phase:1, title:'Docker Compose 구성',
+    pre:['T1-01'], next:['T1-04','T1-05','T1-06','T1-11'],
+    review:['docker-compose up 후 4개 서비스 모두 정상 실행','postgres 볼륨 재시작 후 데이터 보존 확인','app → postgres, app → redis 통신 확인','nginx → app:8080 프록시 확인'] },
+  { id:'T1-04', phase:1, title:'DB 마이그레이션 연결 (001-002)',
+    pre:['T1-03'], next:['T1-05','T1-07'],
+    review:['서버 시작 시 마이그레이션 자동 적용 로그 출력','players, player_states 테이블 스키마 일치 확인','down 마이그레이션 후 테이블 정상 삭제 확인','DB 연결 실패 시 서버 시작 중단 확인'] },
+  { id:'T1-05', phase:1, title:'GET /health 구현',
+    pre:['T1-02','T1-03','T1-04'], next:['T1-11'],
+    review:['DB·Redis 모두 정상 시 200 응답','DB 연결 끊은 상태 → 503 + db: error','Redis 연결 끊은 상태 → 503 + cache: error','인증 없이 호출 가능 확인 (공개 엔드포인트)'] },
+  { id:'T1-06', phase:1, title:'Rate Limiting 미들웨어',
+    pre:['T1-03'], next:['T1-07','T2-04','T3-02','T4-03'],
+    review:['제한 횟수 초과 시 429 응답','1분 경과 후 카운터 리셋 확인','IP/player_id 기준 구분 적용 확인'] },
+  { id:'T1-07', phase:1, title:'POST /auth/steam 구현',
+    pre:['T1-02','T1-04','T1-06'], next:['T1-08','T1-09'],
+    review:['유효 티켓 → jwt, refresh_token, expires_at 정상 수신','동일 티켓 재사용 → 409 TICKET_USED','무효 티켓 → 401 INVALID_TICKET','새 로그인 후 이전 세션 jti Redis에서 삭제 확인','players upsert 정상 동작 확인','player_states 신규 레코드 자동 생성 확인'] },
+  { id:'T1-08', phase:1, title:'JWT 미들웨어 구현',
+    pre:['T1-07'], next:['T1-09','T1-10','T2-03','T2-04','T3-02','T4-03','T4-04'],
+    review:['유효 JWT + Redis jti 존재 → 요청 통과','만료된 JWT → 401','Redis에서 jti 수동 삭제 후 유효 JWT → 401 (무효화 확인)','Authorization 헤더 없는 요청 → 401'] },
+  { id:'T1-09', phase:1, title:'POST /auth/refresh 구현',
+    pre:['T1-07','T1-08'], next:['T1-10'],
+    review:['정상 refresh_token → 새 JWT 발급','refresh 후 이전 JWT로 요청 → 401 즉시 반환','refresh 후 새 JWT로 요청 → 200 정상','무효 refresh_token → 401 INVALID_REFRESH_TOKEN','Lua 스크립트 원자성 단위 테스트 통과'] },
+  { id:'T1-10', phase:1, title:'DELETE /auth/logout 구현',
+    pre:['T1-08','T1-09'], next:[],
+    review:['현재 세션 로그아웃 → 204, 이후 동일 JWT 재사용 → 401','구 세션 로그아웃 → 204, 새 세션 current/refresh 보호 확인','Lua 스크립트 원자성 단위 테스트 통과','JWT 없는 로그아웃 요청 → 401'] },
+  { id:'T1-11', phase:1, title:'AWS Lightsail + SSL 세팅',
+    pre:['T1-05','T1-10'], next:['T2-01','T2-02','T2-03'],
+    review:['HTTPS GET /health 외부 정상 응답','HTTP → HTTPS 리다이렉트 확인','SSL 인증서 유효기간 + 자동 갱신 설정 확인','PostgreSQL, Redis 외부 직접 접속 불가 (방화벽)','서버에서 .env 파일 git 미포함 확인'] },
+
+  /* ─── Phase 2 ─── */
+  { id:'T2-01', phase:2, title:'DB 마이그레이션 (003-004)',
+    pre:['T1-11'], next:['T2-03','T3-02'],
+    review:['마이그레이션 자동 적용 확인','inventories UNIQUE (player_id, item_id) 제약 확인','gacha_logs (player_id, pulled_at DESC) 인덱스 확인'] },
+  { id:'T2-02', phase:2, title:'POST /time/sync 구현',
+    pre:['T1-11'], next:[],
+    review:['정상 시간 범위 → warning: false','5분 이상 차이 → warning: true + 올바른 drift_seconds 값','인증 헤더 없이 호출 가능 확인'] },
+  { id:'T2-03', phase:2, title:'GET /player/state 구현',
+    pre:['T2-01','T1-08'], next:['T2-04'],
+    review:['전체 상태 필드 정상 반환 (enlightenment_pts, streak_days, inventory 등)','빈 인벤토리 플레이어 → inventory: [] 정상 반환','인증 없는 요청 → 401'] },
+  { id:'T2-04', phase:2, title:'POST /player/clicks 기본 구현',
+    pre:['T2-03'], next:['T2-05'],
+    review:['정상 요청 → 포인트 증가 후 반환','DB enlightenment_pts 실제 반영 확인','batch_id 없는 요청 → 400'] },
+  { id:'T2-05', phase:2, title:'클릭 어뷰징 방어 구현',
+    pre:['T2-04'], next:[],
+    review:['동일 batch_id 5분 이내 재전송 → 409 DUPLICATE_BATCH','동일 batch_id 5분 이후 재전송 → 새 배치 처리 (의도적 허용)','count=0 → 400 INVALID_COUNT','count=301 → 400 INVALID_COUNT','시간당 3000 초과 → 429 RATE_EXCEEDED','1초 미만 연속 요청 → 429 TOO_FREQUENT','단위 테스트: 4개 규칙 각각 + 조합 케이스 통과'] },
+
+  /* ─── Phase 3 ─── */
+  { id:'T3-01', phase:3, title:'가챠 RNG + 확률 테이블 구현',
+    pre:['T2-05'], next:['T3-02'],
+    review:['1만 회 시 확률 분포 설계값 ±2% 이내','crypto/rand 사용 확인 (math/rand 미사용)','gacha_seed_hash SHA-256 형식, 원문 미포함 확인','단위 테스트: 각 rarity 반환 케이스 커버'] },
+  { id:'T3-02', phase:3, title:'POST /gacha/pull 구현',
+    pre:['T3-01','T2-01'], next:['T3-03','T3-04'],
+    review:['쿨다운 중 → 429 COOLDOWN_ACTIVE + next_gacha_at','포인트 부족 → 409 INSUFFICIENT_POINTS','중복 아이템 → is_duplicate: true, refund_points 양수, 인벤토리 미추가','트랜잭션 중간 실패 시 전체 롤백 단위 테스트','Redis miss 시 DB fallback 쿨다운 복구 확인','gacha_logs 레코드 정상 기록 확인'] },
+  { id:'T3-03', phase:3, title:'GET /gacha/status 구현',
+    pre:['T3-02'], next:[],
+    review:['쿨다운 중 → can_pull: false + next_gacha_at','쿨다운 없음 → can_pull: true + next_gacha_at: null','Redis 키 수동 삭제 후 DB fallback 동작 확인'] },
+  { id:'T3-04', phase:3, title:'GET /gacha/logs 구현',
+    pre:['T3-02'], next:['T4-01'],
+    review:['페이징 정상 동작 (page, limit 파라미터)','pulled_at DESC 정렬 확인','total 값 정확성 확인','limit 미지정 시 기본값(20) 적용 확인'] },
+
+  /* ─── Phase 4 ─── */
+  { id:'T4-01', phase:4, title:'DB 마이그레이션 (005-006)',
+    pre:['T3-04'], next:['T4-02','T4-03','T4-04','T4-05'],
+    review:['마이그레이션 적용 확인','player_achievements PK 복합키 (player_id, achievement_id) 제약 확인','achievement_retry_queue partial index WHERE resolved_at IS NULL 확인'] },
+  { id:'T4-02', phase:4, title:'업적 조건 정의 (6개)',
+    pre:['T4-01'], next:['T4-03'],
+    review:['6개 업적 조건 충족/미충족 케이스 단위 테스트 통과','조건 로직이 서버 코드에만 존재 확인','DB 쿼리 실행 계획 확인 (인덱스 활용)'] },
+  { id:'T4-03', phase:4, title:'POST /achievement/unlock 구현',
+    pre:['T4-02','T1-08'], next:['T4-05'],
+    review:['조건 충족 → 200 { ok: true, steam_synced: true }','동일 업적 재요청 → 200 { already_unlocked: true }','조건 미충족 → 400 CONDITION_NOT_MET','Steam API 실패 → 200 { steam_synced: false } + Redis 큐 적재','DB INSERT가 Steam API 호출보다 먼저 실행됨 단위 테스트 확인','Steam API 실패 후에도 player_achievements DB 레코드 존재 확인'] },
+  { id:'T4-04', phase:4, title:'GET /achievement/list 구현',
+    pre:['T4-01','T1-08'], next:[],
+    review:['전체 6개 업적 항목 반환 (미달성 포함)','달성 업적 unlocked: true, unlocked_at 값 확인','미달성 업적 unlocked: false, unlocked_at: null 확인','steam_synced 값 정확 반환'] },
+  { id:'T4-05', phase:4, title:'업적 재시도 백그라운드 워커',
+    pre:['T4-03'], next:['T5-01','T5-02'],
+    review:['Steam API 실패 후 1분 이내 재시도 동작 확인','재시도 성공 후 steam_synced: true 업데이트 확인','서버 재시작 후 큐 잔여 항목 재처리 확인','워커 panic 시 서버 전체 중단 없이 재기동 확인'] },
+
+  /* ─── Phase 5 ─── */
+  { id:'T5-01', phase:5, title:'자동 DB 백업',
+    pre:['T4-05'], next:['T5-04'],
+    review:['백업 파일 일 1회 생성 확인','7일치 보관 후 오래된 파일 자동 삭제 확인','백업 파일로 DB 복원 성공 확인'] },
+  { id:'T5-02', phase:5, title:'서버 모니터링 알림',
+    pre:['T4-05'], next:['T5-03'],
+    review:['서비스 의도적 중단 후 5분 이내 알림 수신','알림 내용에 장애 서비스명, 감지 시각 포함'] },
+  { id:'T5-03', phase:5, title:'부하 테스트',
+    pre:['T5-01','T5-02'], next:[],
+    review:['CCU 200 기준 P95 응답시간 300ms 이하','부하 중 에러율 1% 이하','DB 커넥션 풀 50개 이내 유지','메모리 누수 없음 (부하 종료 후 메모리 정상 회복)'] },
+  { id:'T5-04', phase:5, title:'복구 테스트',
+    pre:['T5-01'], next:[],
+    review:['백업 → 복원 → 서버 재기동 전체 1시간 이내 완료','복원 후 데이터 일관성 확인 (레코드 수 일치)','복원 runbook 문서가 운영자 없이도 재현 가능한 수준'] },
+];
+
+/* ── State ── */
+let statusMap = {};
+let checkMap  = {};
+
+function load() {
+  try { statusMap = { ...DEFAULT_STATUS_MAP, ...(JSON.parse(localStorage.getItem(LS_KEY)) || {}) }; } catch { statusMap = { ...DEFAULT_STATUS_MAP }; }
+  try { checkMap  = JSON.parse(localStorage.getItem(LS_CHK))  || {}; } catch { checkMap  = {}; }
+}
+function save() {
+  localStorage.setItem(LS_KEY, JSON.stringify(statusMap));
+  localStorage.setItem(LS_CHK, JSON.stringify(checkMap));
+}
+function getStatus(id) { return statusMap[id] ?? 0; }
+function getChecks(id)  { return checkMap[id]  ?? []; }
+
+/* ── Helpers ── */
+function scrollToTask(id) {
+  const el = document.getElementById('card-' + id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+/* ── Update header ── */
+function updateHeader() {
+  const counts = [0, 0, 0, 0];
+  TASKS.forEach(t => counts[getStatus(t.id)]++);
+  [0,1,2,3].forEach(i => document.getElementById('cnt-' + i).textContent = counts[i]);
+  const done  = counts[3];
+  const total = TASKS.length;
+  const pct   = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('prog-fill').style.width = pct + '%';
+  document.getElementById('prog-text').textContent = `완료 ${done} / ${total} (${pct}%)`;
+}
+
+/* ── Update phase bar ── */
+function updatePhaseBar(phaseNum) {
+  const tasks    = TASKS.filter(t => t.phase === phaseNum);
+  const done     = tasks.filter(t => getStatus(t.id) === 3).length;
+  const pct      = tasks.length ? Math.round(done / tasks.length * 100) : 0;
+  const fill     = document.getElementById('pp-fill-' + phaseNum);
+  const count    = document.getElementById('pp-count-' + phaseNum);
+  if (fill)  fill.style.width = pct + '%';
+  if (count) count.textContent = `${done} / ${tasks.length}`;
+}
+
+/* ── Render single card status ── */
+function refreshCard(id) {
+  const card = document.getElementById('card-' + id);
+  if (!card) return;
+  const si = getStatus(id);
+  card.className = `task-card status-${si}`;
+  const btn = card.querySelector('.status-btn');
+  btn.className = `status-btn ${S_CLASS[si]}`;
+  btn.textContent = STATUSES[si];
+}
+
+/* ── Cycle status ── */
+function cycleStatus(id) {
+  statusMap[id] = (getStatus(id) + 1) % 4;
+  save();
+  refreshCard(id);
+  updateHeader();
+  const task = TASKS.find(t => t.id === id);
+  if (task) updatePhaseBar(task.phase);
+}
+
+/* ── Toggle review ── */
+function toggleReview(btn) {
+  const arrow = btn.querySelector('.review-arrow');
+  const list  = btn.nextElementSibling;
+  const open  = list.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open', open);
+  btn.querySelector('.review-label').textContent = open ? '리뷰 항목 접기' : '리뷰 항목 보기';
+}
+
+/* ── Toggle check ── */
+function toggleCheck(id, idx, el) {
+  const checks = getChecks(id);
+  const pos    = checks.indexOf(idx);
+  if (pos === -1) checks.push(idx); else checks.splice(pos, 1);
+  checkMap[id] = checks;
+  save();
+  const icon = el.querySelector('.check');
+  const text = el.querySelector('.review-text');
+  const checked = checkMap[id].includes(idx);
+  icon.textContent = checked ? '☑' : '☐';
+  icon.classList.toggle('checked', checked);
+  text.classList.toggle('checked', checked);
+}
+
+/* ── Toggle phase collapse ── */
+function togglePhase(phaseNum) {
+  const grid  = document.getElementById('pg-' + phaseNum);
+  const arrow = document.getElementById('pa-' + phaseNum);
+  const collapsed = grid.classList.toggle('collapsed');
+  if (arrow) arrow.classList.toggle('open', !collapsed);
+}
+
+/* ── Full render ── */
+function render() {
+  updateHeader();
+
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+
+  PHASES.forEach(phase => {
+    const tasks = TASKS.filter(t => t.phase === phase.num);
+
+    const sec = document.createElement('section');
+    sec.className = 'phase';
+
+    sec.innerHTML = `
+      <div class="phase-header" onclick="togglePhase(${phase.num})">
+        <div class="phase-left">
+          <span class="phase-arrow open" id="pa-${phase.num}">▶</span>
+          <div>
+            <div class="phase-name">${phase.name}</div>
+            <div class="phase-goal">${phase.goal}</div>
+          </div>
+        </div>
+        <div class="phase-right">
+          <div class="phase-prog-wrap">
+            <div class="phase-prog-track"><div class="phase-prog-fill" id="pp-fill-${phase.num}" style="width:0%"></div></div>
+            <span class="phase-count" id="pp-count-${phase.num}">0 / ${tasks.length}</span>
+          </div>
+        </div>
+      </div>
+      <div class="tasks-grid" id="pg-${phase.num}"></div>
+    `;
+    main.appendChild(sec);
+    updatePhaseBar(phase.num);
+
+    const grid = document.getElementById('pg-' + phase.num);
+
+    tasks.forEach(task => {
+      const si     = getStatus(task.id);
+      const checks = getChecks(task.id);
+
+      const card = document.createElement('div');
+      card.className = `task-card status-${si}`;
+      card.id = 'card-' + task.id;
+
+      const preHtml = task.pre.length
+        ? task.pre.map(d => `<span class="dep-chip" onclick="scrollToTask('${d}')" title="${d}로 이동">${d}</span>`).join('')
+        : '<span style="color:var(--muted);font-size:.68rem">없음</span>';
+
+      const nextHtml = task.next.length
+        ? task.next.map(d => `<span class="dep-chip" onclick="scrollToTask('${d}')" title="${d}로 이동">${d}</span>`).join('')
+        : '<span style="color:var(--muted);font-size:.68rem">없음</span>';
+
+      const reviewHtml = task.review.map((r, i) => {
+        const chk = checks.includes(i);
+        return `
+          <div class="review-item" onclick="toggleCheck('${task.id}', ${i}, this)">
+            <span class="check ${chk ? 'checked' : ''}">${chk ? '☑' : '☐'}</span>
+            <span class="review-text ${chk ? 'checked' : ''}">${r}</span>
+          </div>`;
+      }).join('');
+
+      const doneChecks = task.review.filter((_, i) => checks.includes(i)).length;
+
+      card.innerHTML = `
+        <div class="card-top">
+          <div>
+            <div class="card-id">${task.id}</div>
+            <div class="card-title">${task.title}</div>
+          </div>
+          <button class="status-btn ${S_CLASS[si]}" onclick="cycleStatus('${task.id}')" title="클릭하여 다음 상태로 변경">${STATUSES[si]}</button>
+        </div>
+        <div class="card-meta">
+          <div class="meta-row"><span class="meta-label">선행</span>${preHtml}</div>
+          <div class="meta-row"><span class="meta-label">후행</span>${nextHtml}</div>
+        </div>
+        <button class="review-toggle" onclick="toggleReview(this)">
+          <span class="review-arrow">▶</span>
+          <span class="review-label">리뷰 항목 보기</span>
+          <span style="color:var(--muted);margin-left:.3rem">(${doneChecks}/${task.review.length})</span>
+        </button>
+        <div class="review-list">${reviewHtml}</div>
+      `;
+      grid.appendChild(card);
+    });
+  });
+}
+
+/* ── Init ── */
+load();
+
+const now = new Date();
+document.getElementById('hdate').textContent =
+  now.getFullYear() + '.' +
+  String(now.getMonth()+1).padStart(2,'0') + '.' +
+  String(now.getDate()).padStart(2,'0');
+
+render();
+</script>
+</body>
+</html>

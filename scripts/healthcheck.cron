@@ -1,0 +1,22 @@
+# stone-server health check — runs every minute.
+# Alerts via Slack webhook when /health returns non-200.
+#
+# Install:
+#   sudo cp /opt/stone-server/scripts/healthcheck.cron /etc/cron.d/stone-server-healthcheck
+#   sudo chmod 644 /etc/cron.d/stone-server-healthcheck
+#
+# Before installing, create the secrets file at /etc/stone-server/monitor.env:
+#   sudo mkdir -p /etc/stone-server
+#   sudo tee /etc/stone-server/monitor.env <<'EOF'
+#   HEALTH_URL=https://yourdomain.com/api/v1/health
+#   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
+#   EOF
+#   sudo chmod 600 /etc/stone-server/monitor.env
+#
+# The script sources /etc/stone-server/monitor.env automatically; do NOT
+# put secrets in this cron file.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+* * * * * root COMPOSE_DIR=/opt/stone-server /opt/stone-server/scripts/healthcheck.sh >> /var/log/stone-server-healthcheck.log 2>&1

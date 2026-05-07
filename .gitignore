@@ -1,0 +1,18 @@
+.env
+
+# SSL certs — production certs (Let's Encrypt) must not be committed
+nginx/certs/fullchain.pem
+nginx/certs/privkey.pem
+# selfsigned.crt / selfsigned.key are local dev certs and are intentionally tracked
+
+# Backup files
+*.pgdump
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/

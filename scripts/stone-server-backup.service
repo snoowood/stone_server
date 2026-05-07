@@ -1,0 +1,12 @@
+[Unit]
+Description=stone-server PostgreSQL daily backup
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=COMPOSE_DIR=/opt/stone-server
+ExecStart=/opt/stone-server/scripts/backup.sh
+StandardOutput=append:/var/log/stone-server-backup.log
+StandardError=append:/var/log/stone-server-backup.log

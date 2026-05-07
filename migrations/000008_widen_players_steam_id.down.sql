@@ -1,0 +1,1 @@
+ALTER TABLE players ALTER COLUMN steam_id TYPE VARCHAR(20);
