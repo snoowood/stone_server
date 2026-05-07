@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS player_states (
     last_login_date   TEXT,
     next_gacha_at     TEXT,
     pity_count        INTEGER NOT NULL DEFAULT 0,
+    enlightenment_rate REAL   NOT NULL DEFAULT 1.0,
+    last_sync_at      TEXT,
     updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

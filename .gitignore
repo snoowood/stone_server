@@ -8,6 +8,9 @@ nginx/certs/privkey.pem
 # Backup files
 *.pgdump
 
+# Local SQLite dev database
+*.db
+
 *.exe
 *.exe~
 *.dll

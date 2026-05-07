@@ -6,7 +6,7 @@
  *   iter 0         → POST /auth/steam  (exercises the endpoint; falls back to
  *                    setup JWT on 429 caused by IP-based rate limit)
  *   every iter     → GET  /player/state
- *                    POST /player/clicks
+ *                    POST /player/sync
  *                    POST /gacha/pull
  *
  * Usage:
@@ -65,7 +65,7 @@ export const options = {
         // Per-endpoint targets
         'http_req_duration{endpoint:auth}':   ['p(95)<300'],
         'http_req_duration{endpoint:state}':  ['p(95)<200'],
-        'http_req_duration{endpoint:clicks}': ['p(95)<250'],
+        'http_req_duration{endpoint:sync}':   ['p(95)<250'],
         'http_req_duration{endpoint:gacha}':  ['p(95)<300'],
     },
 };
@@ -152,21 +152,16 @@ export default function (data) {
 
     sleep(0.3);
 
-    // ── 2. POST /player/clicks ──────────────────────────────────────────────
-    // count=100 → earns 100 enlightenment_pts (exact cost of one gacha pull).
-    // Unique batch_id per VU per iteration prevents duplicate-batch 409s.
-    const batchID = `${__VU}-${__ITER}`;
-    const clicksRes = http.post(
-        `${BASE_URL}/api/v1/player/clicks`,
-        JSON.stringify({ batch_id: batchID, count: 100 }),
-        { headers: authHeaders, tags: { endpoint: 'clicks' } }
+    // ── 2. POST /player/sync ────────────────────────────────────────────────
+    // Server computes (now - last_sync_at) × enlightenment_rate and credits pts.
+    const syncRes = http.post(
+        `${BASE_URL}/api/v1/player/sync`,
+        null,
+        { headers: authHeaders, tags: { endpoint: 'sync' } }
     );
-    check(clicksRes, {
-        'clicks: 200|409|429': r => [200, 409, 429].includes(r.status),
+    check(syncRes, {
+        'sync: 200|429': r => [200, 429].includes(r.status),
     });
-
-    // Respect the server-side 1-second minimum interval between click batches.
-    sleep(1.1);
 
     // ── 3. POST /gacha/pull ─────────────────────────────────────────────────
     // Succeeds when pts >= 100. After the first successful pull per VU this

@@ -20,7 +20,7 @@ type rlPolicy struct {
 var rlPolicies = map[string]rlPolicy{
 	"POST:/api/v1/auth/steam":         {limit: 10, ipBased: true},
 	"POST:/api/v1/gacha/pull":         {limit: 5, ipBased: false},
-	"POST:/api/v1/player/clicks":      {limit: 10, ipBased: false},
+	"POST:/api/v1/player/sync":        {limit: 4, ipBased: false},
 	"POST:/api/v1/achievement/unlock": {limit: 20, ipBased: false},
 }
 

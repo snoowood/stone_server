@@ -161,7 +161,7 @@ func main() {
 	secured.Use(middleware.JWTAuth(pubKey, kv))
 	secured.Use(middleware.RateLimiter(kv))
 	secured.GET("/player/state", playerHandler.GetState)
-	secured.POST("/player/clicks", playerHandler.PostClicks)
+	secured.POST("/player/sync", playerHandler.Sync)
 	secured.POST("/gacha/pull", gachaHandler.Pull)
 	secured.GET("/gacha/status", gachaHandler.Status)
 	secured.GET("/gacha/logs", gachaHandler.Logs)

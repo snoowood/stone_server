@@ -13,8 +13,6 @@ import (
 	"github.com/gensdeis/stone-server/pkg/store"
 )
 
-const pointsPerClick = 1.0
-
 type Handler struct {
 	db store.DB
 	kv kvstore.KVStore
@@ -31,78 +29,72 @@ type inventoryItem struct {
 }
 
 type stateResponse struct {
-	PlayerID         string          `json:"player_id"`
-	EnlightenmentPts float64         `json:"enlightenment_pts"`
-	TimeStoneCnt     int             `json:"time_stone_count"`
-	StreakDays       int             `json:"streak_days"`
-	NextGachaAt      *time.Time      `json:"next_gacha_at"`
-	Inventory        []inventoryItem `json:"inventory"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	PlayerID          string          `json:"player_id"`
+	EnlightenmentPts  float64         `json:"enlightenment_pts"`
+	EnlightenmentRate float64         `json:"enlightenment_rate"`
+	TimeStoneCnt      int             `json:"time_stone_count"`
+	StreakDays        int             `json:"streak_days"`
+	NextGachaAt       *time.Time      `json:"next_gacha_at"`
+	LastSyncAt        *time.Time      `json:"last_sync_at"`
+	Inventory         []inventoryItem `json:"inventory"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
-type clicksRequest struct {
-	BatchID string `json:"batch_id" binding:"required"`
-	Count   int    `json:"count"`
+type syncResponse struct {
+	EnlightenmentPts float64    `json:"enlightenment_pts"`
+	LastSyncAt       *time.Time `json:"last_sync_at"`
 }
 
-type clicksResponse struct {
-	EnlightenmentPts float64 `json:"enlightenment_pts"`
-}
-
-// PostClicks handles POST /api/v1/player/clicks.
-func (h *Handler) PostClicks(c *gin.Context) {
-	var req clicksRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "batch_id and count are required", "code": "INVALID_REQUEST"})
-		return
-	}
-	if req.Count <= 0 || req.Count > 300 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "count must be between 1 and 300", "code": "INVALID_COUNT"})
-		return
-	}
-
+// Sync handles POST /api/v1/player/sync.
+// It computes enlightenment earned since last_sync_at using the player's
+// current enlightenment_rate and credits it, then updates last_sync_at = now.
+func (h *Handler) Sync(c *gin.Context) {
 	playerID := c.GetString("player_id")
 	ctx := c.Request.Context()
 
-	if batchExists(ctx, h.kv, playerID, req.BatchID) {
-		c.JSON(http.StatusConflict, gin.H{"error": "duplicate batch_id", "code": "DUPLICATE_BATCH"})
-		return
-	}
-	if !checkTooFrequent(ctx, h.kv, playerID) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "requests too frequent", "code": "TOO_FREQUENT"})
-		return
-	}
-	if !checkHourlyRate(ctx, h.kv, playerID, req.Count) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "hourly click limit exceeded", "code": "RATE_EXCEEDED"})
-		return
-	}
-	if !registerBatch(ctx, h.kv, playerID, req.BatchID) {
-		c.JSON(http.StatusConflict, gin.H{"error": "duplicate batch_id", "code": "DUPLICATE_BATCH"})
-		return
-	}
-
-	delta := float64(req.Count) * pointsPerClick
-
-	var newPts float64
+	var lastSyncAt *time.Time
+	var rate float64
 	err := h.db.QueryRow(ctx, `
-		UPDATE player_states
-		SET enlightenment_pts = enlightenment_pts + ?,
-		    updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		SELECT enlightenment_rate, last_sync_at
+		FROM player_states
 		WHERE player_id = ?
-		RETURNING enlightenment_pts
-	`, delta, playerID).Scan(&newPts)
+	`, playerID).Scan(&rate, store.ScanNullTime(&lastSyncAt))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "player state not found", "code": "NOT_FOUND"})
 			return
 		}
-		log.Error().Err(err).Msg("player clicks: update enlightenment_pts")
+		log.Error().Err(err).Msg("player sync: query player_states")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
 
-	incrHourly(ctx, h.kv, playerID, req.Count)
-	c.JSON(http.StatusOK, clicksResponse{EnlightenmentPts: newPts})
+	now := time.Now().UTC()
+	var delta float64
+	if lastSyncAt != nil {
+		elapsed := now.Sub(*lastSyncAt).Seconds()
+		if elapsed > 0 {
+			delta = elapsed * rate
+		}
+	}
+
+	var newPts float64
+	var newSyncAt *time.Time
+	err = h.db.QueryRow(ctx, `
+		UPDATE player_states
+		SET enlightenment_pts = enlightenment_pts + ?,
+		    last_sync_at      = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE player_id = ?
+		RETURNING enlightenment_pts, last_sync_at
+	`, delta, playerID).Scan(&newPts, store.ScanNullTime(&newSyncAt))
+	if err != nil {
+		log.Error().Err(err).Msg("player sync: update enlightenment_pts")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+
+	c.JSON(http.StatusOK, syncResponse{EnlightenmentPts: newPts, LastSyncAt: newSyncAt})
 }
 
 // GetState handles GET /api/v1/player/state.
@@ -114,14 +106,17 @@ func (h *Handler) GetState(c *gin.Context) {
 	resp.PlayerID = playerID
 
 	err := h.db.QueryRow(ctx, `
-		SELECT enlightenment_pts, time_stone_count, streak_days, next_gacha_at, updated_at
+		SELECT enlightenment_pts, enlightenment_rate, time_stone_count, streak_days,
+		       next_gacha_at, last_sync_at, updated_at
 		FROM player_states
 		WHERE player_id = ?
 	`, playerID).Scan(
 		&resp.EnlightenmentPts,
+		&resp.EnlightenmentRate,
 		&resp.TimeStoneCnt,
 		&resp.StreakDays,
 		store.ScanNullTime(&resp.NextGachaAt),
+		store.ScanNullTime(&resp.LastSyncAt),
 		store.ScanTime(&resp.UpdatedAt),
 	)
 	if err != nil {
