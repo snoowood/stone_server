@@ -36,8 +36,11 @@ Ask the dev team if you need help getting access.
 
 ### 1.3 Get the release files
 
+The release lives on the `deploy` branch of the server repo (no source code,
+only the launcher scripts and the pinned image tag).
+
 ```
-git clone <release-repo-url> stone-server-tester
+git clone -b deploy --single-branch <server-repo-url> stone-server-tester
 cd stone-server-tester
 ```
 
@@ -53,7 +56,9 @@ You should see `start.bat` (Windows), `start.command` (macOS), and friends.
 | **macOS** | Right-click `start.command` → **Open** (Gatekeeper blocks plain double-click on first launch). After the first time, double-click works. |
 | **Linux** | `./start.sh` |
 
-First launch takes ~1 minute (image download). You'll see:
+If Docker Desktop isn't running, the script will try to launch it for you and
+wait up to 90 seconds for it to be ready. First launch then takes ~1 minute
+(image download). You'll see:
 
 ```
 === Server ready ===

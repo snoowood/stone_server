@@ -10,6 +10,8 @@ nginx/certs/privkey.pem
 
 # Local SQLite dev database
 *.db
+*.db-shm
+*.db-wal
 
 *.exe
 *.exe~

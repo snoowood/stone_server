@@ -1,13 +1,11 @@
 name: Publish tester release
 
-# Mirrors tester-release/ to the separate release repo and bumps APP_IMAGE
-# in .env.template to the new tag, so testers can `git pull` to update.
+# Mirrors tester-release/ from main → the same repo's `deploy` branch as an
+# orphan history (no source code). Testers clone with:
+#   git clone -b deploy --single-branch <repo-url> stone-server-tester
 #
-# Required repo secrets / variables (set under Settings → Secrets and variables → Actions):
-#   - secrets.RELEASE_REPO_TOKEN  : a fine-grained PAT or GitHub App token with
-#                                   contents:write on the release repo
-#   - vars.RELEASE_REPO_SLUG      : "<owner>/<repo>" of the release repo
-#                                   (e.g. "gensdeis/stone-server-tester")
+# Uses GITHUB_TOKEN which is automatically scoped to this repo with
+# contents:write below — no PAT or secret setup required.
 
 on:
   workflow_call:
@@ -25,41 +23,51 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - name: Check out source repo
+      - name: Check out source (main)
         uses: actions/checkout@v4
         with:
           path: src
 
-      - name: Check out release repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.RELEASE_REPO_SLUG }}
-          token: ${{ secrets.RELEASE_REPO_TOKEN }}
-          path: release
-
-      - name: Sync tester-release/ → release repo
-        run: |
-          set -eu
-          # Wipe everything except .git so deletions in source propagate.
-          find release -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a src/tester-release/. release/
-
-      - name: Pin image tag in .env.template
+      - name: Publish to deploy branch
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           IMAGE_PATH: ghcr.io/${{ github.repository }}
+          REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
           set -eu
-          sed -i "s|^APP_IMAGE=.*|APP_IMAGE=${IMAGE_PATH}:${IMAGE_TAG}|" release/.env.template
-          grep '^APP_IMAGE=' release/.env.template
 
-      - name: Commit & push
-        working-directory: release
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -eu
+          # 1. Stage the release content (with the image tag pinned).
+          mkdir -p /tmp/payload
+          cp -a src/tester-release/. /tmp/payload/
+          sed -i "s|^APP_IMAGE=.*|APP_IMAGE=${IMAGE_PATH}:${IMAGE_TAG}|" /tmp/payload/.env.template
+          grep '^APP_IMAGE=' /tmp/payload/.env.template
+
+          # 2. Get a clean clone of this repo to operate the deploy branch in.
+          git clone "$REPO_URL" /tmp/deploy-clone
+          cd /tmp/deploy-clone
+
+          # 3. Check out (or create) the deploy branch as an orphan — no main history.
+          if git ls-remote --exit-code --heads origin deploy >/dev/null 2>&1; then
+            git fetch origin deploy
+            git checkout deploy
+            git rm -rf . >/dev/null 2>&1 || true
+            git clean -fdx
+          else
+            echo "deploy branch does not exist yet — creating orphan."
+            git checkout --orphan deploy
+            git rm -rf . >/dev/null 2>&1 || true
+            git clean -fdx
+          fi
+
+          # 4. Drop the payload in.
+          cp -a /tmp/payload/. .
+
+          # 5. Commit & push if anything changed.
           git config user.name  "stone-server release bot"
           git config user.email "release-bot@users.noreply.github.com"
           git add -A
@@ -68,6 +76,7 @@ jobs:
             exit 0
           fi
           git commit -m "Release ${IMAGE_TAG}"
-          git tag "${IMAGE_TAG}"
-          git push origin HEAD
-          git push origin "${IMAGE_TAG}"
+          git push origin deploy
+          # Note: we don't tag the deploy branch here. The image_tag (e.g.
+          # v0.1.0) already exists as a tag on main; the commit message above
+          # is enough to trace which deploy commit ships which image.

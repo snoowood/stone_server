@@ -6,10 +6,29 @@ echo "=== Stone Server (tester) — starting ==="
 echo
 
 if ! docker info >/dev/null 2>&1; then
-  echo "[error] Docker Desktop is not running."
-  echo "        Open Docker Desktop, wait for the whale icon to stop animating, then re-run this."
-  read -n 1 -s -r -p "Press any key to close..."
-  exit 1
+  echo "[init] Docker Desktop is not running — trying to launch it..."
+  if [ ! -d "/Applications/Docker.app" ]; then
+    echo "[error] Docker Desktop is not installed."
+    echo "        Install it from https://www.docker.com/products/docker-desktop/"
+    read -n 1 -s -r -p "Press any key to close..."
+    exit 1
+  fi
+  open -a Docker
+  echo "[init] Waiting for Docker daemon (up to 90s)..."
+  ready=0
+  for i in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    sleep 3
+  done
+  if [ "$ready" != "1" ]; then
+    echo "[error] Docker did not become ready within 90 seconds."
+    echo "        Launch Docker manually, wait for the whale icon to stop animating, then re-run."
+    read -n 1 -s -r -p "Press any key to close..."
+    exit 1
+  fi
+  echo "[init] Docker is ready."
 fi
 
 if [ ! -f .env ]; then
