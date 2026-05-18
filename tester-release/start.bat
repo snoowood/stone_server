@@ -49,9 +49,8 @@ if not exist .env (
 echo [pull] Fetching the latest server image...
 docker compose -f docker-compose.tester.yml pull
 if errorlevel 1 (
-  echo [error] docker compose pull failed.
-  echo         If you see "denied" / "unauthorized", run this once:
-  echo             docker login ghcr.io
+  echo [error] docker compose pull failed. Check your internet connection and try again.
+  echo         If this keeps happening, send logs.bat output to the dev team.
   pause
   exit /b 1
 )
@@ -64,11 +63,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
+set HTTPS_PORT=8443
+if exist .env (
+  for /f "tokens=2 delims==" %%a in ('findstr "^HTTPS_PORT=" .env') do set HTTPS_PORT=%%a
+)
+
 echo [wait] Waiting for the server to become healthy...
 set /a TRIES=0
 :wait_loop
 set /a TRIES+=1
-curl -sf -k https://localhost:8443/api/v1/health >NUL 2>&1
+curl -sf -k https://localhost:%HTTPS_PORT%/api/v1/health >NUL 2>&1
 if not errorlevel 1 goto :ok
 if %TRIES% GEQ 30 goto :timeout
 timeout /t 2 /nobreak >NUL
@@ -77,8 +81,8 @@ goto wait_loop
 :ok
 echo.
 echo === Server ready ===
-echo   Health check : https://localhost:8443/api/v1/health
-echo   Client URL   : https://localhost:8443
+echo   Health check : https://localhost:%HTTPS_PORT%/api/v1/health
+echo   Client URL   : https://localhost:%HTTPS_PORT%
 echo.
 echo Use stop.bat to shut down, logs.bat to view logs.
 pause

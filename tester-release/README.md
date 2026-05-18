@@ -20,21 +20,7 @@ After install:
 - **macOS:** launch Docker.app from Applications. Allow it to install its helper
   on first launch.
 
-### 1.2 Sign in to GitHub Container Registry
-
-The server image lives in a private registry. You only need to do this once per machine.
-
-```
-docker login ghcr.io
-```
-
-Username: your GitHub username
-Password: a Personal Access Token with the **read:packages** scope
-(GitHub → Settings → Developer settings → Personal access tokens).
-
-Ask the dev team if you need help getting access.
-
-### 1.3 Get the release files
+### 1.2 Get the release files
 
 The release lives on the `deploy` branch of the server repo (no source code,
 only the launcher scripts and the pinned image tag).
@@ -119,9 +105,6 @@ To let another PC on the same network connect:
 
 **"Docker Desktop is not running"**
 Start Docker Desktop and wait for the whale icon to stop animating.
-
-**"denied" / "unauthorized" on pull**
-You skipped step 1.2. Run `docker login ghcr.io`.
 
 **"port already in use"**
 Something else on your PC is using port 8080 or 8443. Edit `.env` and change
