@@ -23,12 +23,18 @@ docker compose -f docker-compose.tester.yml pull
 echo "[up] Starting services..."
 docker compose -f docker-compose.tester.yml up -d
 
+HTTPS_PORT=8443
+if [ -f .env ]; then
+  HTTPS_PORT=$(grep '^HTTPS_PORT=' .env | cut -d= -f2)
+  HTTPS_PORT=${HTTPS_PORT:-8443}
+fi
+
 echo "[wait] Waiting for the server to become healthy..."
 for i in $(seq 1 30); do
-  if curl -sfk https://localhost:8443/api/v1/health >/dev/null 2>&1; then
+  if curl -sfk "https://localhost:${HTTPS_PORT}/api/v1/health" >/dev/null 2>&1; then
     echo "=== Server ready ==="
-    echo "  Health check : https://localhost:8443/api/v1/health"
-    echo "  Client URL   : https://localhost:8443"
+    echo "  Health check : https://localhost:${HTTPS_PORT}/api/v1/health"
+    echo "  Client URL   : https://localhost:${HTTPS_PORT}"
     exit 0
   fi
   sleep 2
