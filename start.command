@@ -41,9 +41,8 @@ fi
 
 echo "[pull] Fetching the latest server image..."
 if ! docker compose -f docker-compose.tester.yml pull; then
-  echo "[error] docker compose pull failed."
-  echo "        If you see 'denied' / 'unauthorized', run this once:"
-  echo "            docker login ghcr.io"
+  echo "[error] docker compose pull failed. Check your internet connection and try again."
+  echo "        If this keeps happening, send logs.command output to the dev team."
   read -n 1 -s -r -p "Press any key to close..."
   exit 1
 fi
@@ -51,13 +50,19 @@ fi
 echo "[up] Starting services..."
 docker compose -f docker-compose.tester.yml up -d
 
+HTTPS_PORT=8443
+if [ -f .env ]; then
+  HTTPS_PORT=$(grep '^HTTPS_PORT=' .env | cut -d= -f2)
+  HTTPS_PORT=${HTTPS_PORT:-8443}
+fi
+
 echo "[wait] Waiting for the server to become healthy..."
 for i in $(seq 1 30); do
-  if curl -sfk https://localhost:8443/api/v1/health >/dev/null 2>&1; then
+  if curl -sfk "https://localhost:${HTTPS_PORT}/api/v1/health" >/dev/null 2>&1; then
     echo
     echo "=== Server ready ==="
-    echo "  Health check : https://localhost:8443/api/v1/health"
-    echo "  Client URL   : https://localhost:8443"
+    echo "  Health check : https://localhost:${HTTPS_PORT}/api/v1/health"
+    echo "  Client URL   : https://localhost:${HTTPS_PORT}"
     echo
     echo "Use stop.command to shut down, logs.command to view logs."
     read -n 1 -s -r -p "Press any key to close..."
