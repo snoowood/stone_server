@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stone Server — 원화 검증용 로컬 서버 실행 가이드</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" rel="stylesheet" />
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; min-height: 100vh; overflow-x: clip; }
+
+:root {
+  --bg: #fff7f3;
+  --surface: rgba(255, 255, 255, 0.7);
+  --border: rgba(255, 154, 192, 0.35);
+  --border-strong: rgba(255, 122, 175, 0.55);
+  --text: #4a2a3d;
+  --text-dim: #9b6e85;
+  --text-soft: #c8a3b7;
+  --accent: #ff7eb6;
+  --accent-2: #b39dff;
+  --accent-3: #ffc36b;
+  --accent-4: #7ed4c6;
+  --warn: #ffb085;
+  --shadow-soft: 0 14px 40px rgba(255, 126, 182, 0.22);
+
+  --font-display: 'Quicksand', 'Pretendard', sans-serif;
+  --font-kr: 'Pretendard', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --sidebar-w: 240px;
+}
+
+body {
+  font-family: var(--font-display);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+
+.backdrop {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(255, 195, 107, 0.40), transparent 35%),
+    radial-gradient(circle at 85% 15%, rgba(179, 157, 255, 0.38), transparent 35%),
+    radial-gradient(circle at 75% 80%, rgba(255, 126, 182, 0.32), transparent 40%),
+    radial-gradient(circle at 25% 90%, rgba(126, 212, 198, 0.38), transparent 40%);
+}
+
+.layout {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 32px 120px;
+  gap: 56px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; padding: 0 20px 80px; gap: 0; }
+}
+
+/* ─── Sidebar / TOC ────────────────────────────────────── */
+.sidebar { position: sticky; top: 32px; display: flex; flex-direction: column; gap: 24px; padding-top: 32px; }
+@media (max-width: 900px) { .sidebar { position: relative; top: 0; padding-top: 20px; padding-bottom: 8px; } }
+
+.brand { display: flex; align-items: center; gap: 12px; font-family: var(--font-display); font-weight: 700; letter-spacing: 0.02em; text-decoration: none; color: var(--text); }
+.brand-mark { width: 44px; height: 44px; display: grid; place-items: center; border-radius: var(--radius-md); background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; font-family: var(--font-display); font-weight: 700; font-size: 18px; box-shadow: 0 8px 20px rgba(255, 126, 182, 0.3); }
+.brand-name { font-size: 16px; font-weight: 700; line-height: 1.2; }
+.brand-name .small { display: block; font-size: 11px; color: var(--text-dim); font-weight: 500; margin-top: 2px; }
+
+.toc { display: flex; flex-direction: column; gap: 4px; padding: 18px 14px; background: rgba(255,255,255,0.55); border: 1px solid var(--border); border-radius: var(--radius-md); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.toc-label { font-family: var(--font-display); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--text-dim); padding: 8px 12px 6px; text-transform: uppercase; }
+.toc-link { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius-sm); text-decoration: none; color: var(--text); font-family: var(--font-kr); font-size: 14px; font-weight: 500; transition: all 200ms; }
+.toc-link:hover { background: rgba(255, 126, 182, 0.12); color: #d65a91; }
+.toc-link.active { background: linear-gradient(135deg, rgba(255, 126, 182, 0.25), rgba(179, 157, 255, 0.18)); color: #b13d77; font-weight: 700; }
+.toc-num { font-family: var(--font-display); font-weight: 700; font-size: 11px; color: var(--accent); background: white; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; box-shadow: 0 2px 6px rgba(255, 126, 182, 0.25); }
+.toc-link.active .toc-num { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; }
+.toc-aside { font-size: 12px; color: var(--text-dim); padding: 14px 16px; background: rgba(255,255,255,0.45); border-radius: var(--radius-md); line-height: 1.6; border: 1px solid var(--border); }
+.toc-aside strong { color: var(--text); display: block; margin-bottom: 4px; font-weight: 700; }
+
+/* ─── Main / Hero ──────────────────────────────────────── */
+.main { min-width: 0; padding-top: 32px; }
+
+.hero { padding: 40px 0 80px; }
+.eyebrow { display: inline-flex; align-items: center; gap: 10px; font-family: var(--font-display); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: #d65a91; padding: 8px 16px; border-radius: 999px; background: linear-gradient(135deg, #fff3e8, #ffe5f0); margin-bottom: 28px; }
+.eyebrow .dot { width: 7px; height: 7px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.3); } }
+
+.hero h1 { font-family: var(--font-kr); font-size: clamp(34px, 5vw, 56px); line-height: 1.15; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 24px; color: var(--text); text-wrap: pretty; }
+.hero h1 .gradient { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero p.lead { font-size: 17px; line-height: 1.75; color: var(--text-dim); max-width: 640px; font-family: var(--font-kr); margin-bottom: 32px; }
+
+.btn-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 26px; border-radius: var(--radius-lg); font-family: var(--font-display); font-size: 14px; font-weight: 700; text-decoration: none; cursor: pointer; border: none; transition: all 250ms; }
+.btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; box-shadow: 0 8px 24px rgba(255, 126, 182, 0.35); }
+.btn-primary:hover { transform: translateY(-2px); filter: brightness(1.08); }
+.btn-ghost { background: white; border: 1px solid var(--border-strong); color: var(--text); }
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ─── Sections ─────────────────────────────────────────── */
+section.section { margin-bottom: 96px; scroll-margin-top: 24px; }
+.section-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 36px; padding-bottom: 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.section-num { font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: 0.08em; white-space: nowrap; }
+.section-title { font-family: var(--font-kr); font-size: clamp(26px, 3.5vw, 36px); font-weight: 700; letter-spacing: -0.01em; flex: 1; }
+.section-sub { color: var(--text-dim); font-size: 14px; font-family: var(--font-display); font-weight: 600; white-space: nowrap; }
+
+/* ─── Cards & grids ────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 28px; transition: all 300ms; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: 0 20px 40px rgba(255, 126, 182, 0.15); }
+
+.prereq-grid { margin-top: 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 700px) { .prereq-grid { grid-template-columns: 1fr; } }
+.prereq-grid .card { padding: 22px 24px; }
+.prereq-label { font-family: var(--font-display); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--text-dim); margin-bottom: 8px; }
+.prereq-value { font-family: var(--font-kr); font-size: 18px; font-weight: 700; color: #d65a91; }
+.prereq-desc { font-size: 12px; color: var(--text-dim); margin-top: 6px; font-family: var(--font-kr); line-height: 1.5; }
+
+.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 768px) { .install-grid { grid-template-columns: 1fr; } }
+.install-card .install-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.logo-chip { width: 48px; height: 48px; border-radius: var(--radius-md); display: grid; place-items: center; font-family: var(--font-display); font-weight: 700; font-size: 22px; flex-shrink: 0; color: white; }
+.logo-chip.win { background: linear-gradient(135deg, #38bdf8, #b39dff); }
+.logo-chip.mac { background: linear-gradient(135deg, #ff7eb6, #ffc36b); }
+.install-name { font-family: var(--font-kr); font-weight: 700; font-size: 20px; }
+.install-tag { font-size: 11px; font-family: var(--font-display); font-weight: 700; color: var(--text-dim); letter-spacing: 0.08em; }
+.install-card ul { list-style: none; padding: 0; margin-top: 12px; }
+.install-card ul li { font-family: var(--font-kr); font-size: 14px; color: var(--text-dim); padding: 6px 0 6px 22px; position: relative; line-height: 1.65; }
+.install-card ul li::before { content: ''; position: absolute; left: 4px; top: 14px; width: 8px; height: 8px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+
+/* ─── Steps ───────────────────────────────────────────── */
+.steps { display: flex; flex-direction: column; gap: 0; position: relative; }
+.step { display: grid; grid-template-columns: 80px 1fr; gap: 28px; padding: 28px 0; position: relative; }
+@media (max-width: 600px) { .step { grid-template-columns: 56px 1fr; gap: 18px; } }
+.step:not(:last-child)::after { content: ''; position: absolute; left: 27px; top: 80px; bottom: -10px; width: 2px; background: linear-gradient(to bottom, rgba(255, 126, 182, 0.4), transparent); }
+.step-num { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-display); font-size: 20px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; position: relative; z-index: 2; flex-shrink: 0; box-shadow: 0 8px 20px rgba(255, 126, 182, 0.3); }
+.step-body h3 { font-family: var(--font-kr); font-size: 22px; font-weight: 700; margin-bottom: 10px; }
+.step-body p { font-family: var(--font-kr); font-size: 15px; color: var(--text-dim); line-height: 1.75; margin-bottom: 14px; }
+.step-body p:last-child { margin-bottom: 0; }
+.step-body strong { color: var(--text); font-weight: 700; }
+.step-body code { font-family: var(--font-mono); font-size: 0.92em; background: white; padding: 1px 8px; border-radius: 6px; color: #d65a91; border: 1px solid rgba(255, 154, 192, 0.25); }
+
+/* ─── Code block ──────────────────────────────────────── */
+.code-block { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; background: white; border: 1px solid rgba(255, 154, 192, 0.3); border-radius: var(--radius-md); padding: 18px 22px; color: var(--text); overflow-x: auto; position: relative; margin-top: 8px; margin-bottom: 8px; }
+.code-block .label { color: var(--accent); user-select: none; }
+.code-block .url { color: #b13d77; font-weight: 700; }
+.code-block .comment { color: var(--text-soft); }
+
+/* ─── Terminal preview ────────────────────────────────── */
+.terminal { background: #2d1f2c; border-radius: var(--radius-lg); border: 1px solid rgba(255, 126, 182, 0.3); overflow: hidden; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; box-shadow: 0 20px 50px rgba(74, 42, 61, 0.18); margin-top: 16px; }
+.terminal-bar { background: rgba(255,255,255,0.06); padding: 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.terminal-bar .dots { display: flex; gap: 6px; }
+.terminal-bar .tdot { width: 11px; height: 11px; border-radius: 50%; }
+.terminal-bar .tdot:nth-child(1) { background: #ff7eb6; }
+.terminal-bar .tdot:nth-child(2) { background: #ffc36b; }
+.terminal-bar .tdot:nth-child(3) { background: #7ed4c6; }
+.terminal-bar .title { font-size: 11px; color: #cfaec4; letter-spacing: 0.05em; margin-left: 8px; }
+.terminal-body { padding: 20px 24px; color: #f9e6ef; }
+.terminal-body .line { margin-bottom: 4px; }
+.terminal-body .info { color: #cfaec4; }
+.terminal-body .ok { color: #7ed4c6; }
+.terminal-body .hi { color: #fff; font-weight: 700; }
+.terminal-body .url { color: #ffb8da; }
+.terminal-body .divider { color: #b39dff; }
+
+/* ─── Folder tree ─────────────────────────────────────── */
+.folder-tree { font-family: var(--font-mono); font-size: 13px; line-height: 1.95; background: white; border: 1px solid rgba(255, 154, 192, 0.3); border-radius: var(--radius-md); padding: 18px 22px; color: var(--text); white-space: pre-wrap; overflow-x: auto; }
+.folder-tree .root { color: #d65a91; font-weight: 700; }
+.folder-tree .here { color: #d65a91; font-weight: 700; background: linear-gradient(135deg, #fff3e8, #ffe5f0); padding: 1px 8px; border-radius: 6px; margin-left: 6px; font-family: var(--font-kr); font-size: 12px; }
+.folder-tree .leaf { color: var(--text-soft); }
+.folder-tree .group { color: var(--accent-2); }
+
+/* ─── Feature grid (사용 방법) ────────────────────────── */
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+@media (max-width: 900px) { .feature-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .feature-grid { grid-template-columns: 1fr; } }
+.feature { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 28px; transition: all 300ms; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.feature:hover { transform: translateY(-4px); border-color: var(--border-strong); box-shadow: 0 20px 40px rgba(255, 126, 182, 0.15); }
+.feature-icon { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #fff3e8, #ffe5f0); color: var(--accent); display: grid; place-items: center; margin-bottom: 18px; font-size: 22px; }
+.feature h4 { font-family: var(--font-kr); font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+.feature .file-tag { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-bottom: 12px; display: block; }
+.feature p { font-family: var(--font-kr); font-size: 14px; line-height: 1.65; color: var(--text-dim); }
+
+/* ─── Callout / Highlight ─────────────────────────────── */
+.callout { background: linear-gradient(135deg, #fff3e8, #ffe5f0); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 22px 28px; display: flex; flex-direction: column; gap: 10px; margin: 20px 0; }
+.callout-head { font-family: var(--font-kr); font-size: 16px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.callout p { font-family: var(--font-kr); font-size: 14px; line-height: 1.7; color: var(--text-dim); }
+.callout strong { color: #b13d77; }
+
+.warn-box { background: linear-gradient(135deg, #fff3e8, #ffd7d7); border: 1px solid rgba(255, 154, 154, 0.5); border-radius: var(--radius-md); padding: 16px 22px; font-family: var(--font-kr); font-size: 14px; line-height: 1.65; color: #8a2a2a; margin: 14px 0; }
+.warn-box strong { color: #c44a4a; }
+
+/* ─── FAQ ─────────────────────────────────────────────── */
+.faq-list { display: flex; flex-direction: column; gap: 12px; }
+.faq-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; transition: border-color 200ms; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.faq-item:hover { border-color: var(--border-strong); }
+.faq-q { padding: 18px 22px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--font-kr); font-weight: 600; font-size: 15px; background: transparent; border: none; color: var(--text); width: 100%; text-align: left; }
+.faq-toggle { width: 28px; height: 28px; display: grid; place-items: center; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-radius: 50%; transition: transform 300ms; flex-shrink: 0; font-weight: 700; font-size: 14px; }
+.faq-item.open .faq-toggle { transform: rotate(45deg); }
+.faq-a { max-height: 0; overflow: hidden; transition: max-height 350ms ease, padding 350ms ease; font-family: var(--font-kr); font-size: 14px; line-height: 1.75; color: var(--text-dim); }
+.faq-item.open .faq-a { max-height: 500px; padding: 0 22px 20px; }
+.faq-a code { font-family: var(--font-mono); font-size: 0.92em; background: white; padding: 1px 7px; border-radius: 5px; color: #d65a91; border: 1px solid rgba(255, 154, 192, 0.25); }
+
+/* ─── Footer ──────────────────────────────────────────── */
+.footer { padding-top: 50px; margin-top: 40px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; font-family: var(--font-display); font-size: 13px; font-weight: 500; color: var(--text-soft); }
+.footer .muted { color: var(--text-dim); }
+.tag { display: inline-block; padding: 4px 12px; font-size: 12px; font-weight: 600; border-radius: 999px; background: linear-gradient(135deg, #fff3e8, #ffe5f0); color: #d65a91; margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<div class="backdrop"></div>
+
+<div class="layout">
+
+  <!-- ━━━ SIDEBAR ━━━ -->
+  <aside class="sidebar">
+    <a href="#top" class="brand">
+      <div class="brand-mark">S</div>
+      <div class="brand-name">
+        Stone Server
+        <span class="small">서버 실행 가이드</span>
+      </div>
+    </a>
+
+    <nav class="toc">
+      <div class="toc-label">목차</div>
+      <a class="toc-link" href="#prereq"><span class="toc-num">01</span> 준비물</a>
+      <a class="toc-link" href="#install"><span class="toc-num">02</span> Docker 설치</a>
+      <a class="toc-link" href="#clone"><span class="toc-num">03</span> 파일 받기</a>
+      <a class="toc-link" href="#run"><span class="toc-num">04</span> 서버 켜기</a>
+      <a class="toc-link" href="#client"><span class="toc-num">05</span> 클라이언트 실행</a>
+      <a class="toc-link" href="#daily"><span class="toc-num">06</span> 끄기/로그/업데이트</a>
+      <a class="toc-link" href="#faq"><span class="toc-num">07</span> 문제 해결 FAQ</a>
+    </nav>
+
+    <div class="toc-aside">
+      <strong>예상 소요 시간</strong>
+      처음 한 번은 약 10~15분 (다운로드 포함)<br>
+      두 번째부터는 더블클릭 한 번이면 1분 안에 켜집니다 🍃
+    </div>
+  </aside>
+
+  <!-- ━━━ MAIN ━━━ -->
+  <main class="main" id="top">
+
+    <!-- HERO -->
+    <header class="hero">
+      <div class="eyebrow"><span class="dot"></span> STONE SERVER</div>
+      <h1>서버 실행 가이드</h1>
+      <p class="lead">
+        Stone Server를 PC에 띄우고 Unity 클라이언트로 접속해서 확인해보세요.
+      </p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="#prereq">지금 시작하기 ↓</a>
+        <a class="btn btn-ghost" href="#faq">문제 해결 FAQ</a>
+      </div>
+    </header>
+
+    <!-- ━━━ 01 준비물 ━━━ -->
+    <section class="section" id="prereq">
+      <div class="section-head">
+        <div class="section-num">01</div>
+        <h2 class="section-title">준비물 확인</h2>
+        <div class="section-sub">3분 · 본인 PC만 있으면 OK</div>
+      </div>
+
+      <div class="prereq-grid">
+        <div class="card">
+          <div class="prereq-label">OS</div>
+          <div class="prereq-value">Windows 또는 Mac</div>
+          <div class="prereq-desc">Windows 10/11 · macOS (Intel 또는 Apple Silicon M1~M4 모두 OK)</div>
+        </div>
+        <div class="card">
+          <div class="prereq-label">DOCKER DESKTOP</div>
+          <div class="prereq-value">약 5GB 디스크</div>
+          <div class="prereq-desc">서버를 안전한 작은 상자(컨테이너) 안에 띄워주는 무료 프로그램. 다음 단계에서 설치해요</div>
+        </div>
+        <div class="card">
+          <div class="prereq-label">인터넷</div>
+          <div class="prereq-value">초기 다운로드용</div>
+          <div class="prereq-desc">처음 켤 때만 서버 이미지를 받아옵니다. 이후엔 오프라인도 가능</div>
+        </div>
+      </div>
+
+      <div class="callout" style="margin-top: 24px;">
+        <div class="callout-head">⭐ 어렵게 들려도 괜찮아요</div>
+        <p>"Docker", "컨테이너", "이미지" 같은 단어가 낯설어도 전혀 문제없습니다. 이 가이드는 그 단어들을 모르고도 끝까지 진행할 수 있도록 만들어졌어요. <strong>스크립트가 자동으로 다 해줍니다.</strong></p>
+      </div>
+    </section>
+
+    <!-- ━━━ 02 Docker Desktop 설치 ━━━ -->
+    <section class="section" id="install">
+      <div class="section-head">
+        <div class="section-num">02</div>
+        <h2 class="section-title">Docker Desktop 설치</h2>
+        <div class="section-sub">5~10분 · 한 번만 하면 끝</div>
+      </div>
+
+      <div class="install-grid">
+
+        <div class="card install-card">
+          <div class="install-head">
+            <div class="logo-chip win">⊞</div>
+            <div>
+              <div class="install-name">Windows 10/11</div>
+              <div class="install-tag">DESKTOP · 64-BIT</div>
+            </div>
+          </div>
+          <p style="font-family: var(--font-kr); font-size: 14px; color: var(--text-dim); line-height: 1.65;">
+            아래 링크에서 인스톨러를 받아 더블클릭으로 설치 → PC 재부팅 → 트레이의 작은 고래 아이콘이 멈출 때까지 30초~1분 대기.
+          </p>
+          <ul>
+            <li><a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener" style="color: #b13d77; font-weight: 700;">docker.com/products/docker-desktop</a> 접속 → "Download for Windows"</li>
+            <li>설치 도중 "Use WSL 2" 옵션이 보이면 체크해두기</li>
+            <li>재부팅 후 시작 메뉴에서 "Docker Desktop" 실행</li>
+          </ul>
+        </div>
+
+        <div class="card install-card">
+          <div class="install-head">
+            <div class="logo-chip mac">⌘</div>
+            <div>
+              <div class="install-name">macOS</div>
+              <div class="install-tag">INTEL · APPLE SILICON</div>
+            </div>
+          </div>
+          <p style="font-family: var(--font-kr); font-size: 14px; color: var(--text-dim); line-height: 1.65;">
+            본인 Mac의 칩(Intel 또는 Apple Silicon)에 맞는 dmg를 받아 Applications로 드래그.
+          </p>
+          <ul>
+            <li><a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener" style="color: #b13d77; font-weight: 700;">docker.com/products/docker-desktop</a> 접속 → "Download for Mac"</li>
+            <li>Apple Silicon(M1/M2/M3/M4)이면 <strong>"Apple chip"</strong> 버전 선택</li>
+            <li>Applications에서 Docker 실행 → 첫 실행 시 helper 권한 다이얼로그 동의</li>
+          </ul>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ━━━ 03 서버 파일 받기 ━━━ -->
+    <section class="section" id="clone">
+      <div class="section-head">
+        <div class="section-num">03</div>
+        <h2 class="section-title">서버 파일 받기</h2>
+        <div class="section-sub">2분 · git GUI로 한 번에</div>
+      </div>
+
+      <div class="steps">
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h3>git GUI 도구를 설치해요</h3>
+            <p>코드 한 줄 안 쓰고 클릭으로만 받기 위해, 다음 중 편한 걸 하나 설치해주세요. 둘 다 무료입니다.</p>
+            <ul style="list-style: none; padding: 0; font-family: var(--font-kr); font-size: 14px; color: var(--text-dim); line-height: 2;">
+              <li>🪟🍎 <a href="https://desktop.github.com/" target="_blank" rel="noopener" style="color: #b13d77; font-weight: 700;">GitHub Desktop</a> — 가장 간단, 한글 메뉴</li>
+              <li>🪟🍎 <a href="https://git-fork.com/" target="_blank" rel="noopener" style="color: #b13d77; font-weight: 700;">Fork</a> — 다른 화면을 보고 싶다면</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <h3>아래 주소로 deploy 브랜치를 받아요</h3>
+            <p>GUI 도구의 "Clone repository" 메뉴를 열고, 아래 주소와 브랜치를 입력해 본인 PC 원하는 위치(예: 바탕화면 또는 문서 폴더)에 받습니다.</p>
+            <div class="code-block">
+<span class="comment"># Repository URL</span>
+<span class="url">https://github.com/snoowood/stone_server.git</span>
+
+<span class="comment"># Branch (반드시 deploy 선택!)</span>
+<span class="label">deploy</span>
+            </div>
+            <p style="margin-top: 12px;"><strong>GitHub Desktop의 경우:</strong> File → Clone repository → URL 탭 → 위 주소 붙여넣기 → Local path 선택 → 받은 뒤 Current branch 메뉴에서 <code>deploy</code>로 전환.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <h3>받은 폴더 안에 이런 파일들이 있어요</h3>
+            <p>받은 폴더를 탐색기/Finder로 열면 다음과 같이 보입니다. 어떤 파일을 더블클릭할지만 기억하면 돼요.</p>
+            <div class="folder-tree">
+<span class="root">📁 stone_server/</span>            <span class="here">← 받은 폴더 (위치는 본인이 정한 곳)</span>
+├── <span class="leaf">📁 _internal/</span>            <span class="leaf">(자동 처리 — 건드릴 일 없음)</span>
+├── <span class="leaf">📁 nginx/</span>                <span class="leaf">(자동 처리)</span>
+├── <span class="leaf">📄 .env.template</span>         <span class="leaf">(자동 생성용 — 건드릴 일 없음)</span>
+├── <span class="leaf">📄 docker-compose.tester.yml</span> <span class="leaf">(자동 처리)</span>
+├── <span class="leaf">📄 README.md</span>             <span class="leaf">(영어 문서)</span>
+│
+├── <span class="group">▶️ start.bat</span>             <span class="here">Windows · 서버 켜기 (제일 자주 씀)</span>
+├── <span class="group">▶️ start.command</span>         <span class="here">Mac · 서버 켜기</span>
+├── <span class="group">⏹️ stop.bat / stop.command</span>     <span class="here">서버 끄기</span>
+├── <span class="group">📜 logs.bat / logs.command</span>     <span class="here">로그 보기</span>
+└── <span class="group">♻️ update.bat / update.command</span> <span class="here">최신 받기</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ━━━ 04 서버 켜기 ━━━ -->
+    <section class="section" id="run">
+      <div class="section-head">
+        <div class="section-num">04</div>
+        <h2 class="section-title">서버 켜기</h2>
+        <div class="section-sub">처음 1~2분 · 이후 10초</div>
+      </div>
+
+      <div class="steps">
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h3>본인 OS에 맞는 시작 파일을 더블클릭</h3>
+            <p>
+              <strong>Windows</strong>: <code>start.bat</code> 더블클릭<br>
+              <strong>Mac</strong>: <code>start.command</code>를 <strong>우클릭 → 열기</strong> (첫 실행만 이렇게, 이후엔 더블클릭 OK)
+            </p>
+            <div class="warn-box">
+              <strong>⚠ 처음 한 번은 보안 경고가 떠요 — 정상이에요</strong><br>
+              Windows는 "Windows에서 PC를 보호했습니다" 화면이 떠요 → <strong>추가 정보 → 실행</strong> 클릭.<br>
+              Mac은 "확인되지 않은 개발자" 경고 → <strong>우클릭 → 열기</strong>로 한 번만 허용하면 그 다음부턴 안 뜹니다.
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <h3>창에서 일어나는 일들 (그냥 기다리면 됨)</h3>
+            <p>검은 창에서 다음 일들이 순서대로 자동 진행돼요. 첫 실행은 약 1~2분, 이후엔 10초 정도면 끝납니다.</p>
+            <ul style="list-style: none; padding: 0; font-family: var(--font-kr); font-size: 14px; color: var(--text-dim); line-height: 2;">
+              <li>① Docker Desktop이 꺼져 있으면 자동 실행 (고래 아이콘 깨우기)</li>
+              <li>② 첫 실행이면 보안 키(.env)를 본인 PC용으로 자동 생성</li>
+              <li>③ 서버 이미지를 인터넷에서 받아옴 (≈ 15MB)</li>
+              <li>④ 서버, 데이터베이스, 캐시 컨테이너 4개를 동시에 켬</li>
+              <li>⑤ 서버가 응답할 때까지 잠깐 대기 → 준비 완료 메시지!</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <h3>이 메시지가 뜨면 성공! 🎉</h3>
+            <p>창에 아래와 비슷한 출력이 보이면 서버가 정상 가동 중입니다.</p>
+            <div class="terminal">
+              <div class="terminal-bar">
+                <div class="dots"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></div>
+                <div class="title">start.bat</div>
+              </div>
+              <div class="terminal-body">
+                <div class="line"><span class="info">[init]</span> Docker is ready.</div>
+                <div class="line"><span class="info">[pull]</span> Fetching the latest server image...</div>
+                <div class="line"><span class="info">[up]</span> Starting services...</div>
+                <div class="line"><span class="info">[wait]</span> Waiting for the server to become healthy...</div>
+                <div class="line">&nbsp;</div>
+                <div class="line"><span class="divider">=== <span class="hi">Server ready</span> ===</span></div>
+                <div class="line">  Health check : <span class="url">https://localhost:8443/api/v1/health</span></div>
+                <div class="line">  Client URL   : <span class="url">https://localhost:8443</span></div>
+                <div class="line">&nbsp;</div>
+                <div class="line"><span class="info">Use stop.bat to shut down, logs.bat to view logs.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <h3>이 창은 그대로 두세요</h3>
+            <p>서버는 이 검은 창이 떠 있는 동안 계속 동작합니다. <strong>창을 닫지 말고</strong> 다음 단계(클라이언트 실행)로 넘어가요. 다 끝나면 그때 끄면 됩니다.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ━━━ 05 클라이언트 실행 ━━━ -->
+    <section class="section" id="client">
+      <div class="section-head">
+        <div class="section-num">05</div>
+        <h2 class="section-title">클라이언트 실행</h2>
+        <div class="section-sub">1분 · 인게임 진입</div>
+      </div>
+
+      <div class="steps">
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h3>개발팀에게 받은 Unity 클라이언트 빌드 실행</h3>
+            <p>사내 드라이브 또는 메신저로 전달받은 Unity 클라이언트 빌드(<code>.exe</code> 또는 <code>.app</code>)를 더블클릭으로 실행합니다.</p>
+            <p style="font-size: 13px;">전달받은 위치를 모르거나 빌드가 없다면 개발팀(gensdeis)에게 요청해주세요.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <h3>자동으로 본인 PC 서버에 접속</h3>
+            <p>테스트용 클라이언트 빌드는 <code>https://localhost:8443</code>에 자동으로 붙도록 만들어져 있습니다. 별도 IP/포트 입력 불필요.</p>
+            <div class="callout" style="margin-top: 8px;">
+              <div class="callout-head">🌐 다른 PC에서 접속하고 싶다면</div>
+              <p>같은 사무실 네트워크의 다른 PC에서 본인 서버에 붙고 싶다면 <code>.env</code> 파일을 메모장으로 열어 <code>LAN_BIND=0.0.0.0</code>으로 바꾼 뒤 stop → start. 자세한 건 개발팀에 문의해 주세요.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <h3>인게임 진입 → 캐릭터/리소스 확인</h3>
+            <p>로그인 후 확인하고 싶은 캐릭터/맵/이펙트로 이동해 원화/모델/애니메이션이 의도대로 보이는지 확인합니다.</p>
+            <p>로그인은 "테스트 UUID" 방식이라 같은 UUID로 다시 들어오면 같은 캐릭터로 로그인됩니다 — 빌드가 알아서 처리합니다.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ━━━ 06 일상 사용 ━━━ -->
+    <section class="section" id="daily">
+      <div class="section-head">
+        <div class="section-num">06</div>
+        <h2 class="section-title">끄기 · 로그 · 업데이트</h2>
+        <div class="section-sub">필요할 때만 · 더블클릭</div>
+      </div>
+
+      <div class="feature-grid">
+        <div class="feature">
+          <div class="feature-icon">⏹️</div>
+          <h4>서버 끄기</h4>
+          <span class="file-tag">stop.bat / stop.command</span>
+          <p>작업 마치면 더블클릭. 데이터(캐릭터 진행 등)는 그대로 남아 있어서 다음에 켜면 이어서 시작합니다.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">📜</div>
+          <h4>로그 확인</h4>
+          <span class="file-tag">logs.bat / logs.command</span>
+          <p>뭔가 이상할 때 더블클릭하면 최근 200줄의 서버 로그가 보입니다. 이 내용을 개발팀에 전달해주시면 빠르게 도와드릴 수 있어요.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">♻️</div>
+          <h4>최신 버전 받기</h4>
+          <span class="file-tag">update.bat / update.command</span>
+          <p>"서버에 새 변경이 있어요" 라는 안내를 받았을 때 더블클릭. 자동으로 최신 파일 + 이미지로 갱신 후 다시 시작합니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ━━━ 07 FAQ ━━━ -->
+    <section class="section" id="faq">
+      <div class="section-head">
+        <div class="section-num">07</div>
+        <h2 class="section-title">문제가 생기면</h2>
+        <div class="section-sub">대부분 여기서 해결</div>
+      </div>
+
+      <div class="faq-list">
+
+        <div class="faq-item">
+          <button class="faq-q">
+            🐳 고래 아이콘이 멈추지 않아요 / Docker가 켜지지 않아요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            Docker Desktop을 종료(트레이 우클릭 → Quit Docker Desktop)했다가 다시 실행해보세요. 그래도 안 되면 PC를 재부팅하면 거의 모든 경우 해결됩니다. Windows라면 BIOS의 가상화(VT-x / SVM) 옵션이 꺼져 있을 수도 있어요 — 이 경우 개발팀에 문의해 주세요.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            🔒 Mac에서 start.command를 더블클릭해도 아무 일도 안 일어나요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            macOS의 Gatekeeper가 첫 실행을 막은 거예요. <strong>우클릭 → 열기</strong>를 한 번만 해주시면 그 다음부턴 더블클릭으로 잘 됩니다. "확인되지 않은 개발자" 경고가 떠도 <strong>열기</strong>를 눌러 진행하면 됩니다.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            🌐 브라우저에서 "안전하지 않은 연결" / SSL 경고가 떠요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            <strong>정상입니다.</strong> 본인 PC용 자체 서명 인증서를 사용 중이라서 그래요. Unity 클라이언트는 테스트 모드에서 이 경고를 자동으로 무시하도록 만들어져 있습니다. 브라우저로 직접 health check를 열어보고 싶다면 "고급 → 안전하지 않음으로 계속"을 눌러 진행하시면 됩니다.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            ⚠ "port already in use" 에러가 떴어요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            다른 프로그램이 8080 또는 8443 포트를 이미 쓰고 있다는 뜻이에요. 받은 폴더 안의 <code>.env</code> 파일을 메모장으로 열고 <code>HTTP_PORT=18080</code>, <code>HTTPS_PORT=18443</code> 같은 다른 숫자로 바꾼 뒤 stop → start. 클라이언트 접속 주소도 같은 포트로 자동 맞춰집니다.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            ⏱ "Server did not become healthy within 60 seconds" 에러
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            서버 컨테이너 안에서 뭔가 꼬인 경우입니다. <code>logs.bat</code> 또는 <code>logs.command</code>를 더블클릭해서 나오는 출력을 통째로 복사해 개발팀(gensdeis)에 전달해주세요. 화면을 캡쳐해 보내주셔도 좋아요.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            🧹 처음부터 다시 깨끗하게 시작하고 싶어요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            <code>stop.bat</code> 또는 <code>stop.command</code>로 끄신 뒤, 받은 폴더 안의 <code>.env</code> 파일만 삭제해주세요. 다음 <code>start</code>에서 새 보안 키로 다시 생성됩니다. 그래도 이상하면 폴더를 통째로 지우고 03번 단계부터 다시 받아도 OK입니다.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q">
+            🆘 위 어디에도 해당이 없어요
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-a">
+            <code>logs.bat</code>/<code>logs.command</code>를 한 번 돌려서 나오는 출력을 캡쳐하고, "이런 동작을 했더니 이런 메시지가 떴어요"라고 개발팀(gensdeis)에 알려주세요. 무엇을 클릭했는지 / 어떤 화면이 떴는지 시간 순서대로 적어주시면 진단이 훨씬 빨라요.
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <div class="footer">
+      <div>
+        <span class="tag">v1.0</span>
+        <span class="muted">Stone Server 원화 검증용 로컬 실행 가이드</span>
+      </div>
+      <div class="muted">작성: <strong style="color: #d65a91;">gensdeis</strong> · 2026-05-24</div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// FAQ toggles
+document.querySelectorAll('.faq-q').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.parentElement.classList.toggle('open');
+  });
+});
+
+// Active TOC link on scroll
+const sections = document.querySelectorAll('section.section');
+const tocLinks = document.querySelectorAll('.toc-link');
+function updateActive() {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY + 120 >= s.offsetTop) current = s.id;
+  });
+  tocLinks.forEach(l => {
+    l.classList.toggle('active', l.getAttribute('href') === '#' + current);
+  });
+}
+window.addEventListener('scroll', updateActive, { passive: true });
+updateActive();
+</script>
+
+</body>
+</html>
