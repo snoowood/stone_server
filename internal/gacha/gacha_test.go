@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,13 +148,27 @@ func (m *mockDB) Exec(_ context.Context, _ string, _ ...any) (store.Result, erro
 func (m *mockDB) Ping(_ context.Context) error { return nil }
 
 // callPull call helper (bypasses HTTP layer).
+// slot_index 는 0 (첫 슬롯) 으로 고정 — 본 unit 테스트는 가챠 트랜잭션 로직에 집중하며,
+// slot 검증 자체는 별도 케이스에서 다룬다.
 func callPull(h *Handler, playerID string) *httptest.ResponseRecorder {
+	return callPullWithSlot(h, playerID, 0)
+}
+
+func callPullWithSlot(h *Handler, playerID string, slotIndex int) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Set("player_id", playerID)
-	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", nil)
+	body := strings.NewReader(fmt.Sprintf(`{"slot_index":%d}`, slotIndex))
+	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", body)
+	c.Request.Header.Set("Content-Type", "application/json")
 	h.Pull(c)
 	return w
+}
+
+// completeSlotStartedAt returns a started_at value far enough in the past that
+// cairn.Derive marks the slot as complete (>= MaxLayers × SpawnInterval ago).
+func completeSlotStartedAt() time.Time {
+	return time.Now().UTC().Add(-time.Hour)
 }
 
 // --- cooldown / getNextGachaAt tests ---
@@ -240,8 +255,11 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 
 	// UPDATE-RETURNING with WHERE pts >= cost returns no rows when balance is short.
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowErrNoRows()},
-		execQueue:     []func() (store.Result, error){},
+		queryRowQueue: []store.Row{
+			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate (complete)
+			rowErrNoRows(),                            // deduct returns no rows → InsufficientPoints
+		},
+		execQueue: []func() (store.Result, error){},
 	}
 	db := &mockDB{tx: tx}
 
@@ -264,8 +282,10 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 
 	dbErr := errors.New("db: inventory insert failed")
 	tx := &mockTx{
-		// UPDATE-RETURNING: 200 - 100 = 100 (sufficient → row returned)
-		queryRowQueue: []store.Row{rowFloat64Result(100)},
+		queryRowQueue: []store.Row{
+			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
+			rowFloat64Result(100),                     // deduct → 200 - 100
+		},
 		execQueue: []func() (store.Result, error){
 			failExec(dbErr), // inventory INSERT — fails → should rollback
 		},
@@ -292,11 +312,13 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowFloat64Result(100),                    // deduct → post-deduct balance
-			rowTimeStrResult(time.Now().UTC()),       // next_gacha_at RETURNING last_sync_at
+			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
+			rowFloat64Result(100),                     // deduct → post-deduct balance
+			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1),       // inventory — new item (non-duplicate, no refund path)
+			okExec(1),       // wish_cairn_slots reset
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -321,11 +343,13 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowFloat64Result(400),              // deduct → 500-100
-			rowTimeStrResult(time.Now().UTC()), // next_gacha_at RETURNING last_sync_at
+			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
+			rowFloat64Result(400),                     // deduct → 500-100
+			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // inventory — new item (1 row inserted)
+			okExec(1), // wish_cairn_slots reset
 			okExec(1), // gacha_logs
 		},
 	}
@@ -568,12 +592,14 @@ func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowFloat64Result(400),              // deduct
-			rowFloat64Result(405),              // refund RETURNING (400 + 5)
-			rowTimeStrResult(time.Now().UTC()), // next_gacha_at RETURNING last_sync_at
+			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
+			rowFloat64Result(400),                     // deduct
+			rowFloat64Result(405),                     // refund RETURNING (400 + 5)
+			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(0), // inventory — duplicate (0 rows inserted)
+			okExec(1), // wish_cairn_slots reset
 			okExec(1), // gacha_logs
 		},
 	}

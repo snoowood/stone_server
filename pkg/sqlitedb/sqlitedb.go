@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS player_achievements (
 CREATE INDEX IF NOT EXISTS idx_player_achievements_player
     ON player_achievements(player_id);
 
+CREATE TABLE IF NOT EXISTS wish_cairn_slots (
+    player_id  TEXT NOT NULL REFERENCES players(id),
+    slot_index INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    claimed_at TEXT,
+    PRIMARY KEY (player_id, slot_index)
+);
+
 CREATE TABLE IF NOT EXISTS achievement_retry_queue (
     id             TEXT PRIMARY KEY,
     player_id      TEXT NOT NULL REFERENCES players(id),

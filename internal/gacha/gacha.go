@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/store"
 )
@@ -49,7 +50,17 @@ type pullResponse struct {
 	LastSyncAt   time.Time `json:"last_sync_at"`
 }
 
-var errInsufficientPoints = errors.New("insufficient points")
+var (
+	errInsufficientPoints = errors.New("insufficient points")
+	errCairnIncomplete    = errors.New("cairn slot not complete")
+	errCairnSlotNotFound  = errors.New("cairn slot not found")
+)
+
+// pullRequest mirrors the POST /api/v1/gacha/pull body.
+// M2: slot_index 필수. 서버가 해당 슬롯이 complete 인지 검증.
+type pullRequest struct {
+	SlotIndex *int `json:"slot_index" binding:"required"`
+}
 
 // Status handles GET /api/v1/gacha/status.
 func (h *Handler) Status(c *gin.Context) {
@@ -80,6 +91,17 @@ func (h *Handler) Pull(c *gin.Context) {
 	playerID := c.GetString("player_id")
 	ctx := c.Request.Context()
 
+	var req pullRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.SlotIndex == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slot_index is required", "code": "INVALID_REQUEST"})
+		return
+	}
+	slotIndex := *req.SlotIndex
+	if slotIndex < 0 || slotIndex >= cairn.SlotCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slot_index out of range", "code": "INVALID_SLOT"})
+		return
+	}
+
 	nextAt, err := h.getNextGachaAt(ctx, playerID)
 	if err != nil {
 		log.Error().Err(err).Msg("gacha pull: cooldown check")
@@ -95,10 +117,17 @@ func (h *Handler) Pull(c *gin.Context) {
 		return
 	}
 
-	res, err := h.execPull(ctx, playerID)
+	res, err := h.execPull(ctx, playerID, slotIndex)
 	if err != nil {
-		if errors.Is(err, errInsufficientPoints) {
+		switch {
+		case errors.Is(err, errInsufficientPoints):
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
+			return
+		case errors.Is(err, errCairnIncomplete):
+			c.JSON(http.StatusForbidden, gin.H{"error": "cairn slot not complete", "code": "CAIRN_INCOMPLETE"})
+			return
+		case errors.Is(err, errCairnSlotNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "cairn slot not found", "code": "CAIRN_SLOT_NOT_FOUND"})
 			return
 		}
 		log.Error().Err(err).Msg("gacha pull: transaction")
@@ -138,15 +167,28 @@ func (h *Handler) getNextGachaAt(ctx context.Context, playerID string) (*time.Ti
 	return nextAt, nil
 }
 
-func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse, error) {
+func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) (*pullResponse, error) {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
+	// 0. WishCairn slot 검증 — 트랜잭션 안에서 started_at 을 읽어 derive.
+	//    검증을 차감보다 먼저 둬서 미완성 슬롯에 잔고가 소모되지 않게 한다.
+	startedAt, err := cairn.LoadSlotStartedAt(ctx, tx, playerID, slotIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errCairnSlotNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cairn.Derive(slotIndex, startedAt, time.Now()).Status != cairn.StatusComplete {
+		return nil, errCairnIncomplete
+	}
+
 	// 1+2. Atomic read-and-deduct. WHERE pts >= cost guarantees no overdraft
-	// even under concurrent pulls in PostgreSQL (row-lock) or SQLite (serial writes).
+	// under concurrent pulls.
 	var newBalance float64
 	err = tx.QueryRow(ctx, `
 		UPDATE player_states
@@ -194,7 +236,8 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 
 	// 6. Set next_gacha_at + last_sync_at. last_sync_at 갱신으로 /player/sync 가 호출되지
 	//    않아도 클라 외삽 anchor 가 가챠 시점으로 전진한다.
-	nextGachaAt := time.Now().Add(cooldownTTL).UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second)
+	nextGachaAt := now.Add(cooldownTTL)
 	var lastSyncAt time.Time
 	if err := tx.QueryRow(ctx,
 		"UPDATE player_states SET next_gacha_at = ?, last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ? RETURNING last_sync_at",
@@ -203,7 +246,17 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 		return nil, err
 	}
 
-	// 7. Append gacha log
+	// 7. Slot reset — started_at = now 로 재시작. 다른 슬롯들은 자기 started_at 그대로라
+	//    자연스럽게 시차가 유지된다.
+	nowStr := now.Format(time.RFC3339)
+	if _, err := tx.Exec(ctx,
+		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ?",
+		nowStr, nowStr, playerID, slotIndex,
+	); err != nil {
+		return nil, err
+	}
+
+	// 8. Append gacha log
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO gacha_logs
 		    (id, player_id, item_id, rarity, is_duplicate, cost_points, refund_points, gacha_seed_hash)

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/store"
 )
@@ -28,16 +29,27 @@ type inventoryItem struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 }
 
+// cairnStateResponse mirrors the server-authoritative WishCairn state.
+// SlotCount / MaxLayers / SpawnIntervalSec 는 클라가 표시 외삽에 쓰는 게임 상수.
+// Slots 는 매 read 시 (now - started_at) / interval 로 derive 된 슬롯 배열.
+type cairnStateResponse struct {
+	SlotCount        int               `json:"slot_count"`
+	MaxLayers        int               `json:"max_layers"`
+	SpawnIntervalSec int               `json:"spawn_interval_sec"`
+	Slots            []cairn.SlotState `json:"slots"`
+}
+
 type stateResponse struct {
-	PlayerID          string          `json:"player_id"`
-	EnlightenmentPts  float64         `json:"enlightenment_pts"`
-	EnlightenmentRate float64         `json:"enlightenment_rate"`
-	TimeStoneCnt      int             `json:"time_stone_count"`
-	StreakDays        int             `json:"streak_days"`
-	NextGachaAt       *time.Time      `json:"next_gacha_at"`
-	LastSyncAt        *time.Time      `json:"last_sync_at"`
-	Inventory         []inventoryItem `json:"inventory"`
-	UpdatedAt         time.Time       `json:"updated_at"`
+	PlayerID          string             `json:"player_id"`
+	EnlightenmentPts  float64            `json:"enlightenment_pts"`
+	EnlightenmentRate float64            `json:"enlightenment_rate"`
+	TimeStoneCnt      int                `json:"time_stone_count"`
+	StreakDays        int                `json:"streak_days"`
+	NextGachaAt       *time.Time         `json:"next_gacha_at"`
+	LastSyncAt        *time.Time         `json:"last_sync_at"`
+	Inventory         []inventoryItem    `json:"inventory"`
+	Cairn             cairnStateResponse `json:"cairn"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 type syncResponse struct {
@@ -156,6 +168,20 @@ func (h *Handler) GetState(c *gin.Context) {
 		log.Error().Err(err).Msg("player state: iterate inventories")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
+	}
+
+	// M2: WishCairn 슬롯 상태 — 매 read 시 derive.
+	slots, err := cairn.LoadSlots(ctx, h.db, playerID, time.Now())
+	if err != nil {
+		log.Error().Err(err).Msg("player state: load cairn slots")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+	resp.Cairn = cairnStateResponse{
+		SlotCount:        cairn.SlotCount,
+		MaxLayers:        cairn.MaxLayers,
+		SpawnIntervalSec: cairn.SpawnIntervalSeconds,
+		Slots:            slots,
 	}
 
 	c.JSON(http.StatusOK, resp)
