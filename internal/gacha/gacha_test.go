@@ -283,7 +283,7 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 		queryRowQueue: []store.Row{rowFloat64Result(100)}, // post-deduct balance
 		execQueue: []func() (store.Result, error){
 			okExec(1),       // inventory — new item
-			okExec(1),       // pity + next_gacha_at
+			okExec(1),       // next_gacha_at
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -310,7 +310,7 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 		queryRowQueue: []store.Row{rowFloat64Result(400)}, // post-deduct balance (500-100)
 		execQueue: []func() (store.Result, error){
 			okExec(1), // inventory — new item (1 row inserted)
-			okExec(1), // pity + next_gacha_at
+			okExec(1), // next_gacha_at
 			okExec(1), // gacha_logs
 		},
 	}
@@ -336,13 +336,6 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 // --- Status handler tests ---
 
-func rowIntResult(v int) store.Row {
-	return &mockRow{scanFn: func(dest ...any) error {
-		*(dest[0].(*int)) = v
-		return nil
-	}}
-}
-
 func callStatus(h *Handler, playerID string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -359,10 +352,8 @@ func TestStatus_CooldownActive(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
 	kv.Set(ctx, "gacha:cooldown:p1", future.Format(time.RFC3339), 10*time.Minute)
 
-	// KV hit → getNextGachaAt makes no DB call; then pity_count query
-	db := &mockDB{queryRowFns: []func() store.Row{
-		func() store.Row { return rowIntResult(3) }, // pity_count
-	}}
+	// KV hit → getNextGachaAt makes no DB call.
+	db := &mockDB{}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
 
@@ -376,18 +367,14 @@ func TestStatus_CooldownActive(t *testing.T) {
 	if !strings.Contains(body, "next_gacha_at") {
 		t.Errorf("want next_gacha_at in body: %s", body)
 	}
-	if !strings.Contains(body, `"pity_count":3`) {
-		t.Errorf("want pity_count:3: %s", body)
-	}
 }
 
 func TestStatus_NoCooldown(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	// KV miss, DB returns null next_gacha_at → no cooldown; then pity_count
+	// KV miss, DB returns null next_gacha_at → no cooldown.
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(nil) }, // next_gacha_at (DB fallback)
-		func() store.Row { return rowIntResult(7) },       // pity_count
 	}}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
@@ -402,9 +389,6 @@ func TestStatus_NoCooldown(t *testing.T) {
 	if !strings.Contains(body, `"next_gacha_at":null`) {
 		t.Errorf("want next_gacha_at:null: %s", body)
 	}
-	if !strings.Contains(body, `"pity_count":7`) {
-		t.Errorf("want pity_count:7: %s", body)
-	}
 }
 
 func TestStatus_RedisMiss_DBFallbackCooldown(t *testing.T) {
@@ -413,10 +397,9 @@ func TestStatus_RedisMiss_DBFallbackCooldown(t *testing.T) {
 
 	future := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
 
-	// KV miss → DB returns future next_gacha_at → cooldown active; then pity_count
+	// KV miss → DB returns future next_gacha_at → cooldown active.
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(&future) }, // next_gacha_at (DB fallback)
-		func() store.Row { return rowIntResult(2) },           // pity_count
 	}}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
@@ -558,7 +541,7 @@ func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 		execQueue: []func() (store.Result, error){
 			okExec(0), // inventory — duplicate (0 rows inserted)
 			okExec(1), // refund enlightenment_pts
-			okExec(1), // pity + next_gacha_at
+			okExec(1), // next_gacha_at
 			okExec(1), // gacha_logs
 		},
 	}

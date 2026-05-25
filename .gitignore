@@ -21,3 +21,7 @@ nginx/certs/privkey.pem
 *.test
 *.out
 /vendor/
+
+# Per-milestone diff snapshots used as Codex review input (regenerated each round)
+docs/m*_server_diff.patch
+docs/m*_client_diff.patch

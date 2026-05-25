@@ -35,7 +35,6 @@ func NewHandler(db store.DB, kv kvstore.KVStore) *Handler {
 type statusResponse struct {
 	CanPull     bool       `json:"can_pull"`
 	NextGachaAt *time.Time `json:"next_gacha_at"`
-	PityCount   int        `json:"pity_count"`
 }
 
 type pullResponse struct {
@@ -60,15 +59,6 @@ func (h *Handler) Status(c *gin.Context) {
 		return
 	}
 
-	var pityCount int
-	if err := h.db.QueryRow(ctx,
-		"SELECT pity_count FROM player_states WHERE player_id = ?", playerID,
-	).Scan(&pityCount); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.Error().Err(err).Msg("gacha status: query pity_count")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
-		return
-	}
-
 	canPull := nextAt == nil || !time.Now().Before(*nextAt)
 	var responseNextAt *time.Time
 	if !canPull {
@@ -78,7 +68,6 @@ func (h *Handler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, statusResponse{
 		CanPull:     canPull,
 		NextGachaAt: responseNextAt,
-		PityCount:   pityCount,
 	})
 }
 
@@ -199,10 +188,10 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 		}
 	}
 
-	// 6. Increment pity_count and set next_gacha_at
+	// 6. Set next_gacha_at
 	nextGachaAt := time.Now().Add(cooldownTTL).UTC().Truncate(time.Second)
 	if _, err := tx.Exec(ctx,
-		"UPDATE player_states SET pity_count = pity_count + 1, next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
+		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
 		nextGachaAt.Format(time.RFC3339), playerID,
 	); err != nil {
 		return nil, err

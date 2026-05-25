@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS player_states (
     streak_days       INTEGER NOT NULL DEFAULT 0,
     last_login_date   TEXT,
     next_gacha_at     TEXT,
-    pity_count        INTEGER NOT NULL DEFAULT 0,
     enlightenment_rate REAL   NOT NULL DEFAULT 1.0,
     last_sync_at      TEXT,
     updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -113,6 +112,11 @@ func New(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+
+	// Legacy cleanup: M0 (migrations/000010) dropped player_states.pity_count.
+	// SQLite mode bypasses migrations/, so apply the same change here for reused DBs.
+	// On fresh DBs the column is absent; the error is intentionally swallowed.
+	_, _ = db.ExecContext(ctx, "ALTER TABLE player_states DROP COLUMN pity_count")
 
 	return db, nil
 }
