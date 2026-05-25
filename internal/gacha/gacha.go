@@ -42,12 +42,13 @@ type pullResponse struct {
 	ItemID       string    `json:"item_id"`
 	Rarity       string    `json:"rarity"`
 	IsDuplicate  bool      `json:"is_duplicate"`
-	RefundPoints float64   `json:"refund_points"`
+	RefundPoints float64   `json:"refund_points"` // M3: 항상 0 (refund 폐지, 집계형 stack 모델). 호환성 유지.
 	NextGachaAt  time.Time `json:"next_gacha_at"`
-	// M1: 권위 잔고와 권위 sync 시각. 클라가 BalanceAfter 로 자기 표시 잔고를
-	// 덮어쓰고, LastSyncAt 을 다음 외삽의 anchor 로 사용한다.
+	// M1: 권위 잔고와 권위 sync 시각.
 	BalanceAfter float64   `json:"balance_after"`
 	LastSyncAt   time.Time `json:"last_sync_at"`
+	// M3: 가챠 후 해당 item_id 의 누적 보유 개수. 신규면 1, 중복이면 K+1.
+	NewCount int `json:"new_count"`
 }
 
 var (
@@ -209,30 +210,24 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, err
 	}
 
-	// 4. Inventory UPSERT
-	res, err := tx.Exec(ctx,
-		"INSERT INTO inventories (id, player_id, item_id, rarity) VALUES (?, ?, ?, ?) ON CONFLICT (player_id, item_id) DO NOTHING",
-		uuid.New().String(), playerID, result.ItemID, string(result.Rarity),
-	)
+	// 4. Inventory UPSERT — M3: 집계형 stack 모델.
+	//    중복이면 count += 1, 신규면 count = 1. RETURNING count 로 결과를 받아 응답에 포함.
+	//    is_duplicate 는 RETURNING 의 count 가 1 인지(=신규)/>1 인지(=중복) 로 판정.
+	var newCount int
+	err = tx.QueryRow(ctx, `
+		INSERT INTO inventories (id, player_id, item_id, rarity, count)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT (player_id, item_id) DO UPDATE SET count = inventories.count + 1
+		RETURNING count
+	`, uuid.New().String(), playerID, result.ItemID, string(result.Rarity)).Scan(&newCount)
 	if err != nil {
 		return nil, err
 	}
-	affected, _ := res.RowsAffected()
-	isDuplicate := affected == 0
+	isDuplicate := newCount > 1
 
-	// 5. Refund on duplicate — RETURNING 으로 newBalance 갱신해서 응답 권위값에 반영.
+	// 5. (제거됨) refund 폐지 — M3 집계형은 중복 그 자체가 가치. RefundPoints 는
+	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
 	refundPts := 0.0
-	if isDuplicate {
-		refundPts = h.cfg.RefundPts[result.Rarity]
-		if refundPts > 0 {
-			if err := tx.QueryRow(ctx,
-				"UPDATE player_states SET enlightenment_pts = enlightenment_pts + ? WHERE player_id = ? RETURNING enlightenment_pts",
-				refundPts, playerID,
-			).Scan(&newBalance); err != nil {
-				return nil, err
-			}
-		}
-	}
 
 	// 6. Set next_gacha_at + last_sync_at. last_sync_at 갱신으로 /player/sync 가 호출되지
 	//    않아도 클라 외삽 anchor 가 가챠 시점으로 전진한다.
@@ -279,6 +274,7 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		NextGachaAt:  nextGachaAt,
 		BalanceAfter: newBalance,
 		LastSyncAt:   lastSyncAt,
+		NewCount:     newCount,
 	}, nil
 }
 

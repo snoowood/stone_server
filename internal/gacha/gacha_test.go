@@ -61,6 +61,17 @@ func rowFloat64Result(v float64) store.Row {
 	}}
 }
 
+func rowIntResult(v int) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*int)) = v
+		return nil
+	}}
+}
+
+func rowErrResult(err error) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error { return err }}
+}
+
 // rowTimeStrResult mocks an UPDATE ... RETURNING <ts column> response.
 // Drives a store.ScanTime scanner with an RFC3339 string.
 func rowTimeStrResult(t time.Time) store.Row {
@@ -280,15 +291,15 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	dbErr := errors.New("db: inventory insert failed")
+	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
+		// M3: inventory upsert 가 INSERT ... ON CONFLICT DO UPDATE RETURNING count 라 QueryRow 로 이동.
 		queryRowQueue: []store.Row{
 			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
 			rowFloat64Result(100),                     // deduct → 200 - 100
+			rowErrResult(dbErr),                       // inventory UPSERT RETURNING — fails → should rollback
 		},
-		execQueue: []func() (store.Result, error){
-			failExec(dbErr), // inventory INSERT — fails → should rollback
-		},
+		execQueue: []func() (store.Result, error){},
 	}
 	db := &mockDB{tx: tx}
 
@@ -314,10 +325,10 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 		queryRowQueue: []store.Row{
 			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
 			rowFloat64Result(100),                     // deduct → post-deduct balance
+			rowIntResult(1),                           // inventory UPSERT RETURNING count = 1 (new)
 			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(1),       // inventory — new item (non-duplicate, no refund path)
 			okExec(1),       // wish_cairn_slots reset
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
@@ -345,10 +356,10 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 		queryRowQueue: []store.Row{
 			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
 			rowFloat64Result(400),                     // deduct → 500-100
+			rowIntResult(1),                           // inventory UPSERT RETURNING count = 1 (new item)
 			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(1), // inventory — new item (1 row inserted)
 			okExec(1), // wish_cairn_slots reset
 			okExec(1), // gacha_logs
 		},
@@ -376,6 +387,9 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	}
 	if !strings.Contains(body, "last_sync_at") {
 		t.Errorf("want last_sync_at in body: %s", body)
+	}
+	if !strings.Contains(body, `"new_count":1`) {
+		t.Errorf("want new_count:1 in body: %s", body)
 	}
 }
 
@@ -578,34 +592,25 @@ func TestLogs_PageAndLimit(t *testing.T) {
 	}
 }
 
-func TestExecPull_DuplicateItem_Refund(t *testing.T) {
+// M3: 중복 시 stack count 증가, refund 폐지를 검증.
+func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 	kv := kvstore.NewMemStore()
-
-	// Force a non-zero refund for every rarity so the refund branch always executes,
-	// keeping the QueryRow sequence deterministic across Roll() randomness.
-	cfg := GameConfig{
-		PullCost: 100,
-		RefundPts: map[Rarity]float64{
-			Common: 5, Uncommon: 5, Rare: 5, Unique: 5, Legendary: 5,
-		},
-	}
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
 			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
-			rowFloat64Result(400),                     // deduct
-			rowFloat64Result(405),                     // refund RETURNING (400 + 5)
+			rowFloat64Result(400),                     // deduct (refund 분기 없음)
+			rowIntResult(3),                           // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
 			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(0), // inventory — duplicate (0 rows inserted)
 			okExec(1), // wish_cairn_slots reset
 			okExec(1), // gacha_logs
 		},
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: cfg}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -615,10 +620,13 @@ func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 	if !strings.Contains(body, `"is_duplicate":true`) {
 		t.Errorf("want is_duplicate:true: %s", body)
 	}
-	if !strings.Contains(body, `"refund_points":5`) {
-		t.Errorf("want refund_points:5 in body: %s", body)
+	if !strings.Contains(body, `"refund_points":0`) {
+		t.Errorf("want refund_points:0 (폐지): %s", body)
 	}
-	if !strings.Contains(body, `"balance_after":405`) {
-		t.Errorf("want balance_after:405 in body: %s", body)
+	if !strings.Contains(body, `"new_count":3`) {
+		t.Errorf("want new_count:3 in body: %s", body)
+	}
+	if !strings.Contains(body, `"balance_after":400`) {
+		t.Errorf("want balance_after:400 (no refund applied): %s", body)
 	}
 }

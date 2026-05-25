@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS inventories (
     player_id   TEXT NOT NULL REFERENCES players(id),
     item_id     TEXT NOT NULL,
     rarity      TEXT NOT NULL,
+    count       INTEGER NOT NULL DEFAULT 1,
     acquired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE (player_id, item_id)
 );
@@ -125,6 +126,10 @@ func New(path string) (*sql.DB, error) {
 	// SQLite mode bypasses migrations/, so apply the same change here for reused DBs.
 	// On fresh DBs the column is absent; the error is intentionally swallowed.
 	_, _ = db.ExecContext(ctx, "ALTER TABLE player_states DROP COLUMN pity_count")
+
+	// M3 (migrations/000012): inventories.count column on reused DBs.
+	// On fresh DBs the column already exists; the duplicate-column error is swallowed.
+	_, _ = db.ExecContext(ctx, "ALTER TABLE inventories ADD COLUMN count INTEGER NOT NULL DEFAULT 1")
 
 	return db, nil
 }
