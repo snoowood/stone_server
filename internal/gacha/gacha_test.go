@@ -241,6 +241,91 @@ func TestGetNextGachaAt_RedisMiss_DBNull(t *testing.T) {
 
 // --- Pull handler path tests ---
 
+// M4: 본문 누락 / slot_index null → 400 INVALID_REQUEST.
+func TestPull_MissingSlotIndex_BadRequest(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("player_id", "p1")
+	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", strings.NewReader("{}"))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Pull(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "INVALID_REQUEST") {
+		t.Errorf("want INVALID_REQUEST: %s", w.Body.String())
+	}
+}
+
+// M4: slot_index 가 범위 밖 → 400 INVALID_SLOT.
+func TestPull_OutOfRangeSlotIndex_BadRequest(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+
+	w := callPullWithSlot(h, "p1", 99) // SlotCount=5 이라 99 는 out of range
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "INVALID_SLOT") {
+		t.Errorf("want INVALID_SLOT: %s", w.Body.String())
+	}
+}
+
+// M4: 슬롯이 complete 가 아닐 때 → 403 CAIRN_INCOMPLETE.
+func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
+	kv := kvstore.NewMemStore()
+
+	tx := &mockTx{
+		queryRowQueue: []store.Row{
+			// 방금 시작된 슬롯 — layer 0, building.
+			rowTimeStrResult(time.Now().UTC()),
+		},
+		execQueue: []func() (store.Result, error){},
+	}
+	db := &mockDB{tx: tx}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+
+	w := callPull(h, "p1")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CAIRN_INCOMPLETE") {
+		t.Errorf("want CAIRN_INCOMPLETE: %s", w.Body.String())
+	}
+	if !tx.RolledBack {
+		t.Error("transaction should have been rolled back")
+	}
+}
+
+// M4: 슬롯 자체가 없을 때 → 404 CAIRN_SLOT_NOT_FOUND.
+func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
+	kv := kvstore.NewMemStore()
+
+	tx := &mockTx{
+		queryRowQueue: []store.Row{
+			rowErrResult(sql.ErrNoRows), // cairn.LoadSlotStartedAt → no rows
+		},
+		execQueue: []func() (store.Result, error){},
+	}
+	db := &mockDB{tx: tx}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+
+	w := callPull(h, "p1")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CAIRN_SLOT_NOT_FOUND") {
+		t.Errorf("want CAIRN_SLOT_NOT_FOUND: %s", w.Body.String())
+	}
+	if !tx.RolledBack {
+		t.Error("transaction should have been rolled back")
+	}
+}
+
 func TestPull_CooldownActive(t *testing.T) {
 	kv := kvstore.NewMemStore()
 	ctx := context.Background()
