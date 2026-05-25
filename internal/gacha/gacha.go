@@ -43,6 +43,10 @@ type pullResponse struct {
 	IsDuplicate  bool      `json:"is_duplicate"`
 	RefundPoints float64   `json:"refund_points"`
 	NextGachaAt  time.Time `json:"next_gacha_at"`
+	// M1: 권위 잔고와 권위 sync 시각. 클라가 BalanceAfter 로 자기 표시 잔고를
+	// 덮어쓰고, LastSyncAt 을 다음 외삽의 anchor 로 사용한다.
+	BalanceAfter float64   `json:"balance_after"`
+	LastSyncAt   time.Time `json:"last_sync_at"`
 }
 
 var errInsufficientPoints = errors.New("insufficient points")
@@ -174,26 +178,28 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 	affected, _ := res.RowsAffected()
 	isDuplicate := affected == 0
 
-	// 5. Refund on duplicate
+	// 5. Refund on duplicate — RETURNING 으로 newBalance 갱신해서 응답 권위값에 반영.
 	refundPts := 0.0
 	if isDuplicate {
 		refundPts = h.cfg.RefundPts[result.Rarity]
 		if refundPts > 0 {
-			if _, err := tx.Exec(ctx,
-				"UPDATE player_states SET enlightenment_pts = enlightenment_pts + ? WHERE player_id = ?",
+			if err := tx.QueryRow(ctx,
+				"UPDATE player_states SET enlightenment_pts = enlightenment_pts + ? WHERE player_id = ? RETURNING enlightenment_pts",
 				refundPts, playerID,
-			); err != nil {
+			).Scan(&newBalance); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	// 6. Set next_gacha_at
+	// 6. Set next_gacha_at + last_sync_at. last_sync_at 갱신으로 /player/sync 가 호출되지
+	//    않아도 클라 외삽 anchor 가 가챠 시점으로 전진한다.
 	nextGachaAt := time.Now().Add(cooldownTTL).UTC().Truncate(time.Second)
-	if _, err := tx.Exec(ctx,
-		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
+	var lastSyncAt time.Time
+	if err := tx.QueryRow(ctx,
+		"UPDATE player_states SET next_gacha_at = ?, last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ? RETURNING last_sync_at",
 		nextGachaAt.Format(time.RFC3339), playerID,
-	); err != nil {
+	).Scan(store.ScanTime(&lastSyncAt)); err != nil {
 		return nil, err
 	}
 
@@ -218,6 +224,8 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 		IsDuplicate:  isDuplicate,
 		RefundPoints: refundPts,
 		NextGachaAt:  nextGachaAt,
+		BalanceAfter: newBalance,
+		LastSyncAt:   lastSyncAt,
 	}, nil
 }
 

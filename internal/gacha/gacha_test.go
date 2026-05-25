@@ -60,6 +60,17 @@ func rowFloat64Result(v float64) store.Row {
 	}}
 }
 
+// rowTimeStrResult mocks an UPDATE ... RETURNING <ts column> response.
+// Drives a store.ScanTime scanner with an RFC3339 string.
+func rowTimeStrResult(t time.Time) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		if sc, ok := dest[0].(sql.Scanner); ok {
+			return sc.Scan(t.UTC().Format(time.RFC3339))
+		}
+		return errors.New("rowTimeStrResult: dest[0] not sql.Scanner")
+	}}
+}
+
 // mockResult implements store.Result.
 type mockResult struct {
 	affected int64
@@ -280,10 +291,12 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(100)}, // post-deduct balance
+		queryRowQueue: []store.Row{
+			rowFloat64Result(100),                    // deduct → post-deduct balance
+			rowTimeStrResult(time.Now().UTC()),       // next_gacha_at RETURNING last_sync_at
+		},
 		execQueue: []func() (store.Result, error){
-			okExec(1),       // inventory — new item
-			okExec(1),       // next_gacha_at
+			okExec(1),       // inventory — new item (non-duplicate, no refund path)
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -307,10 +320,12 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(400)}, // post-deduct balance (500-100)
+		queryRowQueue: []store.Row{
+			rowFloat64Result(400),              // deduct → 500-100
+			rowTimeStrResult(time.Now().UTC()), // next_gacha_at RETURNING last_sync_at
+		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // inventory — new item (1 row inserted)
-			okExec(1), // next_gacha_at
 			okExec(1), // gacha_logs
 		},
 	}
@@ -331,6 +346,12 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	}
 	if !strings.Contains(body, "next_gacha_at") {
 		t.Errorf("want next_gacha_at in body: %s", body)
+	}
+	if !strings.Contains(body, `"balance_after":400`) {
+		t.Errorf("want balance_after:400 in body: %s", body)
+	}
+	if !strings.Contains(body, "last_sync_at") {
+		t.Errorf("want last_sync_at in body: %s", body)
 	}
 }
 
@@ -536,18 +557,29 @@ func TestLogs_PageAndLimit(t *testing.T) {
 func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
+	// Force a non-zero refund for every rarity so the refund branch always executes,
+	// keeping the QueryRow sequence deterministic across Roll() randomness.
+	cfg := GameConfig{
+		PullCost: 100,
+		RefundPts: map[Rarity]float64{
+			Common: 5, Uncommon: 5, Rare: 5, Unique: 5, Legendary: 5,
+		},
+	}
+
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(400)}, // post-deduct balance
+		queryRowQueue: []store.Row{
+			rowFloat64Result(400),              // deduct
+			rowFloat64Result(405),              // refund RETURNING (400 + 5)
+			rowTimeStrResult(time.Now().UTC()), // next_gacha_at RETURNING last_sync_at
+		},
 		execQueue: []func() (store.Result, error){
 			okExec(0), // inventory — duplicate (0 rows inserted)
-			okExec(1), // refund enlightenment_pts
-			okExec(1), // next_gacha_at
 			okExec(1), // gacha_logs
 		},
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: cfg}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -557,7 +589,10 @@ func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 	if !strings.Contains(body, `"is_duplicate":true`) {
 		t.Errorf("want is_duplicate:true: %s", body)
 	}
-	if !strings.Contains(body, `"refund_points"`) {
-		t.Errorf("want refund_points in body: %s", body)
+	if !strings.Contains(body, `"refund_points":5`) {
+		t.Errorf("want refund_points:5 in body: %s", body)
+	}
+	if !strings.Contains(body, `"balance_after":405`) {
+		t.Errorf("want balance_after:405 in body: %s", body)
 	}
 }
