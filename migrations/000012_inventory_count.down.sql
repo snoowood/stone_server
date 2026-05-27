@@ -1,0 +1,2 @@
+ALTER TABLE inventories
+    DROP COLUMN IF EXISTS count;

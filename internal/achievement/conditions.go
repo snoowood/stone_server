@@ -62,6 +62,9 @@ func checkFirstPull(ctx context.Context, db achievementDB, playerID string) (boo
 }
 
 func checkRareUnlock(ctx context.Context, db achievementDB, playerID string) (bool, error) {
+	// inventories 는 (player_id, item_id) UNIQUE 라 COUNT(*) 가 "고유 보유 종류 수".
+	// 본 조건은 `>= 1` 이라 SUM(count) 와 동작 동일하지만, M3 변경 의도 (집계형 stack) 와는
+	// 별개로 "한 종류라도 보유" 의미가 명확해 COUNT(*) 유지.
 	var count int
 	if err := db.QueryRow(ctx,
 		"SELECT COUNT(*) FROM inventories WHERE player_id = ? AND rarity IN ('rare','unique','legendary')",
@@ -107,6 +110,9 @@ func checkStreakDays(ctx context.Context, db achievementDB, playerID string, thr
 }
 
 func checkCollector(ctx context.Context, db achievementDB, playerID string) (bool, error) {
+	// "ACH_COLLECTOR = 10 different skins" 기존 의도 보존. inventories 는 (player_id,
+	// item_id) UNIQUE 라 COUNT(*) 가 종류 수. M3 의 count stack 은 중복 보유 표현일 뿐
+	// collector 정의에는 영향 주지 않도록 COUNT(*) 유지.
 	var count int
 	if err := db.QueryRow(ctx,
 		"SELECT COUNT(*) FROM inventories WHERE player_id = ?",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,40 @@ func rowFloat64Result(v float64) store.Row {
 	return &mockRow{scanFn: func(dest ...any) error {
 		*(dest[0].(*float64)) = v
 		return nil
+	}}
+}
+
+func rowIntResult(v int) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*int)) = v
+		return nil
+	}}
+}
+
+func rowErrResult(err error) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error { return err }}
+}
+
+// rowBalanceAndSync mocks the UPDATE ... RETURNING enlightenment_pts, last_sync_at row
+// produced by the atomic accrue+deduct step.
+func rowBalanceAndSync(balance float64, lastSync time.Time) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*float64)) = balance
+		if sc, ok := dest[1].(sql.Scanner); ok {
+			return sc.Scan(lastSync.UTC().Format(time.RFC3339))
+		}
+		return errors.New("rowBalanceAndSync: dest[1] not sql.Scanner")
+	}}
+}
+
+// rowTimeStrResult mocks an UPDATE ... RETURNING <ts column> response.
+// Drives a store.ScanTime scanner with an RFC3339 string.
+func rowTimeStrResult(t time.Time) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		if sc, ok := dest[0].(sql.Scanner); ok {
+			return sc.Scan(t.UTC().Format(time.RFC3339))
+		}
+		return errors.New("rowTimeStrResult: dest[0] not sql.Scanner")
 	}}
 }
 
@@ -136,14 +171,23 @@ func (m *mockDB) Exec(_ context.Context, _ string, _ ...any) (store.Result, erro
 func (m *mockDB) Ping(_ context.Context) error { return nil }
 
 // callPull call helper (bypasses HTTP layer).
+// slot_index 는 0 (첫 슬롯) 으로 고정 — 본 unit 테스트는 가챠 트랜잭션 로직에 집중하며,
+// slot 검증 자체는 별도 케이스에서 다룬다.
 func callPull(h *Handler, playerID string) *httptest.ResponseRecorder {
+	return callPullWithSlot(h, playerID, 0)
+}
+
+func callPullWithSlot(h *Handler, playerID string, slotIndex int) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Set("player_id", playerID)
-	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", nil)
+	body := strings.NewReader(fmt.Sprintf(`{"slot_index":%d}`, slotIndex))
+	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", body)
+	c.Request.Header.Set("Content-Type", "application/json")
 	h.Pull(c)
 	return w
 }
+
 
 // --- cooldown / getNextGachaAt tests ---
 
@@ -204,6 +248,95 @@ func TestGetNextGachaAt_RedisMiss_DBNull(t *testing.T) {
 
 // --- Pull handler path tests ---
 
+// M4: 본문 누락 / slot_index null → 400 INVALID_REQUEST.
+func TestPull_MissingSlotIndex_BadRequest(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("player_id", "p1")
+	c.Request = httptest.NewRequest(http.MethodPost, "/gacha/pull", strings.NewReader("{}"))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Pull(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "INVALID_REQUEST") {
+		t.Errorf("want INVALID_REQUEST: %s", w.Body.String())
+	}
+}
+
+// M4: slot_index 가 범위 밖 → 400 INVALID_SLOT.
+func TestPull_OutOfRangeSlotIndex_BadRequest(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+
+	w := callPullWithSlot(h, "p1", 99) // SlotCount=5 이라 99 는 out of range
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "INVALID_SLOT") {
+		t.Errorf("want INVALID_SLOT: %s", w.Body.String())
+	}
+}
+
+// M4: 슬롯이 complete 가 아닐 때 → 403 CAIRN_INCOMPLETE.
+// 새 흐름: CAS UPDATE 가 affected=0 → LoadSlotStartedAt 로 존재 확인 → INCOMPLETE.
+func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
+	kv := kvstore.NewMemStore()
+
+	tx := &mockTx{
+		queryRowQueue: []store.Row{
+			rowTimeStrResult(time.Now().UTC()), // LoadSlotStartedAt: slot 존재, 최근 시작 (incomplete)
+		},
+		execQueue: []func() (store.Result, error){
+			okExec(0), // CAS slot reset: affected=0 (incomplete 라 조건 미달)
+		},
+	}
+	db := &mockDB{tx: tx}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+
+	w := callPull(h, "p1")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CAIRN_INCOMPLETE") {
+		t.Errorf("want CAIRN_INCOMPLETE: %s", w.Body.String())
+	}
+	if !tx.RolledBack {
+		t.Error("transaction should have been rolled back")
+	}
+}
+
+// M4: 슬롯 자체가 없을 때 → 404 CAIRN_SLOT_NOT_FOUND.
+func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
+	kv := kvstore.NewMemStore()
+
+	tx := &mockTx{
+		queryRowQueue: []store.Row{
+			rowErrResult(sql.ErrNoRows), // LoadSlotStartedAt: 슬롯 자체가 없음
+		},
+		execQueue: []func() (store.Result, error){
+			okExec(0), // CAS slot reset: affected=0 (slot 자체 없음)
+		},
+	}
+	db := &mockDB{tx: tx}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+
+	w := callPull(h, "p1")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CAIRN_SLOT_NOT_FOUND") {
+		t.Errorf("want CAIRN_SLOT_NOT_FOUND: %s", w.Body.String())
+	}
+	if !tx.RolledBack {
+		t.Error("transaction should have been rolled back")
+	}
+}
+
 func TestPull_CooldownActive(t *testing.T) {
 	kv := kvstore.NewMemStore()
 	ctx := context.Background()
@@ -227,10 +360,13 @@ func TestPull_CooldownActive(t *testing.T) {
 func TestExecPull_InsufficientPoints(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	// UPDATE-RETURNING with WHERE pts >= cost returns no rows when balance is short.
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowErrNoRows()},
-		execQueue:     []func() (store.Result, error){},
+		queryRowQueue: []store.Row{
+			rowErrNoRows(), // atomic accrue+deduct returns no rows → InsufficientPoints
+		},
+		execQueue: []func() (store.Result, error){
+			okExec(1), // CAS slot reset (complete)
+		},
 	}
 	db := &mockDB{tx: tx}
 
@@ -251,12 +387,14 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	dbErr := errors.New("db: inventory insert failed")
+	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
-		// UPDATE-RETURNING: 200 - 100 = 100 (sufficient → row returned)
-		queryRowQueue: []store.Row{rowFloat64Result(100)},
+		queryRowQueue: []store.Row{
+			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
+			rowErrResult(dbErr),                // inventory UPSERT RETURNING — fails → rollback
+		},
 		execQueue: []func() (store.Result, error){
-			failExec(dbErr), // inventory INSERT — fails → should rollback
+			okExec(1), // CAS slot reset
 		},
 	}
 	db := &mockDB{tx: tx}
@@ -280,10 +418,13 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(100)}, // post-deduct balance
+		queryRowQueue: []store.Row{
+			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
+			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new)
+		},
 		execQueue: []func() (store.Result, error){
-			okExec(1),       // inventory — new item
-			okExec(1),       // pity + next_gacha_at
+			okExec(1),       // CAS slot reset
+			okExec(1),       // next_gacha_at UPDATE
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -307,10 +448,13 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(400)}, // post-deduct balance (500-100)
+		queryRowQueue: []store.Row{
+			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct → 500-100
+			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new item)
+		},
 		execQueue: []func() (store.Result, error){
-			okExec(1), // inventory — new item (1 row inserted)
-			okExec(1), // pity + next_gacha_at
+			okExec(1), // CAS slot reset
+			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}
@@ -332,16 +476,18 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	if !strings.Contains(body, "next_gacha_at") {
 		t.Errorf("want next_gacha_at in body: %s", body)
 	}
+	if !strings.Contains(body, `"balance_after":400`) {
+		t.Errorf("want balance_after:400 in body: %s", body)
+	}
+	if !strings.Contains(body, "last_sync_at") {
+		t.Errorf("want last_sync_at in body: %s", body)
+	}
+	if !strings.Contains(body, `"new_count":1`) {
+		t.Errorf("want new_count:1 in body: %s", body)
+	}
 }
 
 // --- Status handler tests ---
-
-func rowIntResult(v int) store.Row {
-	return &mockRow{scanFn: func(dest ...any) error {
-		*(dest[0].(*int)) = v
-		return nil
-	}}
-}
 
 func callStatus(h *Handler, playerID string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
@@ -359,10 +505,8 @@ func TestStatus_CooldownActive(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
 	kv.Set(ctx, "gacha:cooldown:p1", future.Format(time.RFC3339), 10*time.Minute)
 
-	// KV hit → getNextGachaAt makes no DB call; then pity_count query
-	db := &mockDB{queryRowFns: []func() store.Row{
-		func() store.Row { return rowIntResult(3) }, // pity_count
-	}}
+	// KV hit → getNextGachaAt makes no DB call.
+	db := &mockDB{}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
 
@@ -376,18 +520,14 @@ func TestStatus_CooldownActive(t *testing.T) {
 	if !strings.Contains(body, "next_gacha_at") {
 		t.Errorf("want next_gacha_at in body: %s", body)
 	}
-	if !strings.Contains(body, `"pity_count":3`) {
-		t.Errorf("want pity_count:3: %s", body)
-	}
 }
 
 func TestStatus_NoCooldown(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	// KV miss, DB returns null next_gacha_at → no cooldown; then pity_count
+	// KV miss, DB returns null next_gacha_at → no cooldown.
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(nil) }, // next_gacha_at (DB fallback)
-		func() store.Row { return rowIntResult(7) },       // pity_count
 	}}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
@@ -402,9 +542,6 @@ func TestStatus_NoCooldown(t *testing.T) {
 	if !strings.Contains(body, `"next_gacha_at":null`) {
 		t.Errorf("want next_gacha_at:null: %s", body)
 	}
-	if !strings.Contains(body, `"pity_count":7`) {
-		t.Errorf("want pity_count:7: %s", body)
-	}
 }
 
 func TestStatus_RedisMiss_DBFallbackCooldown(t *testing.T) {
@@ -413,10 +550,9 @@ func TestStatus_RedisMiss_DBFallbackCooldown(t *testing.T) {
 
 	future := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
 
-	// KV miss → DB returns future next_gacha_at → cooldown active; then pity_count
+	// KV miss → DB returns future next_gacha_at → cooldown active.
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(&future) }, // next_gacha_at (DB fallback)
-		func() store.Row { return rowIntResult(2) },           // pity_count
 	}}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
 	w := callStatus(h, "p1")
@@ -550,15 +686,18 @@ func TestLogs_PageAndLimit(t *testing.T) {
 	}
 }
 
-func TestExecPull_DuplicateItem_Refund(t *testing.T) {
+// M3: 중복 시 stack count 증가, refund 폐지를 검증.
+func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
 	tx := &mockTx{
-		queryRowQueue: []store.Row{rowFloat64Result(400)}, // post-deduct balance
+		queryRowQueue: []store.Row{
+			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct (refund 분기 없음)
+			rowIntResult(3),                    // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
+		},
 		execQueue: []func() (store.Result, error){
-			okExec(0), // inventory — duplicate (0 rows inserted)
-			okExec(1), // refund enlightenment_pts
-			okExec(1), // pity + next_gacha_at
+			okExec(1), // CAS slot reset
+			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}
@@ -574,7 +713,13 @@ func TestExecPull_DuplicateItem_Refund(t *testing.T) {
 	if !strings.Contains(body, `"is_duplicate":true`) {
 		t.Errorf("want is_duplicate:true: %s", body)
 	}
-	if !strings.Contains(body, `"refund_points"`) {
-		t.Errorf("want refund_points in body: %s", body)
+	if !strings.Contains(body, `"refund_points":0`) {
+		t.Errorf("want refund_points:0 (폐지): %s", body)
+	}
+	if !strings.Contains(body, `"new_count":3`) {
+		t.Errorf("want new_count:3 in body: %s", body)
+	}
+	if !strings.Contains(body, `"balance_after":400`) {
+		t.Errorf("want balance_after:400 (no refund applied): %s", body)
 	}
 }

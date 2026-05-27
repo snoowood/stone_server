@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/store"
 )
@@ -35,18 +36,32 @@ func NewHandler(db store.DB, kv kvstore.KVStore) *Handler {
 type statusResponse struct {
 	CanPull     bool       `json:"can_pull"`
 	NextGachaAt *time.Time `json:"next_gacha_at"`
-	PityCount   int        `json:"pity_count"`
 }
 
 type pullResponse struct {
 	ItemID       string    `json:"item_id"`
 	Rarity       string    `json:"rarity"`
 	IsDuplicate  bool      `json:"is_duplicate"`
-	RefundPoints float64   `json:"refund_points"`
+	RefundPoints float64   `json:"refund_points"` // M3: 항상 0 (refund 폐지, 집계형 stack 모델). 호환성 유지.
 	NextGachaAt  time.Time `json:"next_gacha_at"`
+	// M1: 권위 잔고와 권위 sync 시각.
+	BalanceAfter float64   `json:"balance_after"`
+	LastSyncAt   time.Time `json:"last_sync_at"`
+	// M3: 가챠 후 해당 item_id 의 누적 보유 개수. 신규면 1, 중복이면 K+1.
+	NewCount int `json:"new_count"`
 }
 
-var errInsufficientPoints = errors.New("insufficient points")
+var (
+	errInsufficientPoints = errors.New("insufficient points")
+	errCairnIncomplete    = errors.New("cairn slot not complete")
+	errCairnSlotNotFound  = errors.New("cairn slot not found")
+)
+
+// pullRequest mirrors the POST /api/v1/gacha/pull body.
+// M2: slot_index 필수. 서버가 해당 슬롯이 complete 인지 검증.
+type pullRequest struct {
+	SlotIndex *int `json:"slot_index" binding:"required"`
+}
 
 // Status handles GET /api/v1/gacha/status.
 func (h *Handler) Status(c *gin.Context) {
@@ -60,15 +75,6 @@ func (h *Handler) Status(c *gin.Context) {
 		return
 	}
 
-	var pityCount int
-	if err := h.db.QueryRow(ctx,
-		"SELECT pity_count FROM player_states WHERE player_id = ?", playerID,
-	).Scan(&pityCount); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.Error().Err(err).Msg("gacha status: query pity_count")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
-		return
-	}
-
 	canPull := nextAt == nil || !time.Now().Before(*nextAt)
 	var responseNextAt *time.Time
 	if !canPull {
@@ -78,7 +84,6 @@ func (h *Handler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, statusResponse{
 		CanPull:     canPull,
 		NextGachaAt: responseNextAt,
-		PityCount:   pityCount,
 	})
 }
 
@@ -86,6 +91,17 @@ func (h *Handler) Status(c *gin.Context) {
 func (h *Handler) Pull(c *gin.Context) {
 	playerID := c.GetString("player_id")
 	ctx := c.Request.Context()
+
+	var req pullRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.SlotIndex == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slot_index is required", "code": "INVALID_REQUEST"})
+		return
+	}
+	slotIndex := *req.SlotIndex
+	if slotIndex < 0 || slotIndex >= cairn.SlotCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slot_index out of range", "code": "INVALID_SLOT"})
+		return
+	}
 
 	nextAt, err := h.getNextGachaAt(ctx, playerID)
 	if err != nil {
@@ -102,10 +118,17 @@ func (h *Handler) Pull(c *gin.Context) {
 		return
 	}
 
-	res, err := h.execPull(ctx, playerID)
+	res, err := h.execPull(ctx, playerID, slotIndex)
 	if err != nil {
-		if errors.Is(err, errInsufficientPoints) {
+		switch {
+		case errors.Is(err, errInsufficientPoints):
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
+			return
+		case errors.Is(err, errCairnIncomplete):
+			c.JSON(http.StatusForbidden, gin.H{"error": "cairn slot not complete", "code": "CAIRN_INCOMPLETE"})
+			return
+		case errors.Is(err, errCairnSlotNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "cairn slot not found", "code": "CAIRN_SLOT_NOT_FOUND"})
 			return
 		}
 		log.Error().Err(err).Msg("gacha pull: transaction")
@@ -145,22 +168,63 @@ func (h *Handler) getNextGachaAt(ctx context.Context, playerID string) (*time.Ti
 	return nextAt, nil
 }
 
-func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse, error) {
+func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) (*pullResponse, error) {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	// 1+2. Atomic read-and-deduct. WHERE pts >= cost guarantees no overdraft
-	// even under concurrent pulls in PostgreSQL (row-lock) or SQLite (serial writes).
+	now := time.Now().UTC().Truncate(time.Second)
+	nowStr := now.Format(time.RFC3339)
+
+	// 0. WishCairn slot 검증 + reset 을 atomic CAS UPDATE 로. complete 조건 (started_at <=
+	//    now - MaxLayers × interval) 인 슬롯만 reset. 동시 두 요청이 같은 slot 을 claim
+	//    하려고 해도 한 쪽만 affected=1, 다른 쪽은 affected=0 → CAIRN_INCOMPLETE.
+	threshold := now.Add(-time.Duration(cairn.MaxLayers*cairn.SpawnIntervalSeconds) * time.Second)
+	res, err := tx.Exec(ctx,
+		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ? AND started_at <= ?",
+		nowStr, nowStr, playerID, slotIndex, threshold.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// slot 존재 여부 확인으로 INCOMPLETE / NOT_FOUND 구분.
+		_, err := cairn.LoadSlotStartedAt(ctx, tx, playerID, slotIndex)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errCairnSlotNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		return nil, errCairnIncomplete
+	}
+
+	// 1+2. Atomic accrue + deduct + last_sync_at 갱신을 한 UPDATE 로.
+	//      별도 SELECT → 코드 계산 → UPDATE 분리하면 동일 elapsed window 를 두 번 가산할 race
+	//      가능 (e.g. /player/sync 와 동시). 한 SQL 안에서 pending 을 계산해 atomic 보장.
+	//      SQLite strftime/CAST 사용 — 기존 코드와 동일 패턴 (SQLite-우선).
+	// MAX(0, ...) 로 음수 elapsed (clock skew) 시 잔고 감소 방지.
 	var newBalance float64
+	var lastSyncAt time.Time
 	err = tx.QueryRow(ctx, `
 		UPDATE player_states
-		SET enlightenment_pts = enlightenment_pts - ?
-		WHERE player_id = ? AND enlightenment_pts >= ?
-		RETURNING enlightenment_pts
-	`, h.cfg.PullCost, playerID, h.cfg.PullCost).Scan(&newBalance)
+		SET enlightenment_pts = enlightenment_pts +
+			MAX(0, COALESCE(
+				(CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
+				0
+			)) - ?,
+		    last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE player_id = ?
+		  AND enlightenment_pts +
+		      MAX(0, COALESCE(
+		          (CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
+		          0
+		      )) >= ?
+		RETURNING enlightenment_pts, last_sync_at
+	`, h.cfg.PullCost, playerID, h.cfg.PullCost).Scan(&newBalance, store.ScanTime(&lastSyncAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errInsufficientPoints
 	}
@@ -174,35 +238,30 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 		return nil, err
 	}
 
-	// 4. Inventory UPSERT
-	res, err := tx.Exec(ctx,
-		"INSERT INTO inventories (id, player_id, item_id, rarity) VALUES (?, ?, ?, ?) ON CONFLICT (player_id, item_id) DO NOTHING",
-		uuid.New().String(), playerID, result.ItemID, string(result.Rarity),
-	)
+	// 4. Inventory UPSERT — M3: 집계형 stack 모델.
+	//    중복이면 count += 1, 신규면 count = 1. RETURNING count 로 결과를 받아 응답에 포함.
+	//    is_duplicate 는 RETURNING 의 count 가 1 인지(=신규)/>1 인지(=중복) 로 판정.
+	var newCount int
+	err = tx.QueryRow(ctx, `
+		INSERT INTO inventories (id, player_id, item_id, rarity, count)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT (player_id, item_id) DO UPDATE SET count = inventories.count + 1
+		RETURNING count
+	`, uuid.New().String(), playerID, result.ItemID, string(result.Rarity)).Scan(&newCount)
 	if err != nil {
 		return nil, err
 	}
-	affected, _ := res.RowsAffected()
-	isDuplicate := affected == 0
+	isDuplicate := newCount > 1
 
-	// 5. Refund on duplicate
+	// 5. (제거됨) refund 폐지 — M3 집계형은 중복 그 자체가 가치. RefundPoints 는
+	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
 	refundPts := 0.0
-	if isDuplicate {
-		refundPts = h.cfg.RefundPts[result.Rarity]
-		if refundPts > 0 {
-			if _, err := tx.Exec(ctx,
-				"UPDATE player_states SET enlightenment_pts = enlightenment_pts + ? WHERE player_id = ?",
-				refundPts, playerID,
-			); err != nil {
-				return nil, err
-			}
-		}
-	}
 
-	// 6. Increment pity_count and set next_gacha_at
-	nextGachaAt := time.Now().Add(cooldownTTL).UTC().Truncate(time.Second)
+	// 6. Set next_gacha_at. last_sync_at 은 step 2 의 atomic UPDATE 가 갱신함.
+	//    슬롯 reset 은 step 0 에서 atomic CAS 로 완료.
+	nextGachaAt := now.Add(cooldownTTL)
 	if _, err := tx.Exec(ctx,
-		"UPDATE player_states SET pity_count = pity_count + 1, next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
+		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
 		nextGachaAt.Format(time.RFC3339), playerID,
 	); err != nil {
 		return nil, err
@@ -229,6 +288,9 @@ func (h *Handler) execPull(ctx context.Context, playerID string) (*pullResponse,
 		IsDuplicate:  isDuplicate,
 		RefundPoints: refundPts,
 		NextGachaAt:  nextGachaAt,
+		BalanceAfter: newBalance,
+		LastSyncAt:   lastSyncAt,
+		NewCount:     newCount,
 	}, nil
 }
 

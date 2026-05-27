@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/store"
 )
@@ -152,8 +153,12 @@ func upsertPlayer(ctx context.Context, db store.DB, steamID string) (string, err
 
 func initPlayerState(ctx context.Context, db store.DB, playerID string) error {
 	const q = `INSERT INTO player_states (player_id) VALUES (?) ON CONFLICT (player_id) DO NOTHING`
-	_, err := db.Exec(ctx, q, playerID)
-	return err
+	if _, err := db.Exec(ctx, q, playerID); err != nil {
+		return err
+	}
+	// M2: 신규 플레이어용 WishCairn 슬롯도 같이 초기화 (phase_offset 으로 시차 부여).
+	// ON CONFLICT DO NOTHING 이라 재로그인 시에는 no-op.
+	return cairn.InitializeSlots(ctx, db, playerID, time.Now())
 }
 
 // updateLoginStreak applies daily-streak rules atomically based on UTC date:

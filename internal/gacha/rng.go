@@ -40,21 +40,14 @@ var itemPool = map[Rarity][]string{
 }
 
 // GameConfig holds server-side gacha parameters.
+// M3: refund 폐지로 RefundPts 필드 제거. 중복 보상은 inventories.count 증가로 대체.
 type GameConfig struct {
-	PullCost  float64
-	RefundPts map[Rarity]float64
+	PullCost float64
 }
 
 // DefaultConfig is the production gacha configuration.
 var DefaultConfig = GameConfig{
 	PullCost: 100,
-	RefundPts: map[Rarity]float64{
-		Common:    0,
-		Uncommon:  1,
-		Rare:      5,
-		Unique:    15,
-		Legendary: 50,
-	},
 }
 
 // Result holds a single gacha pull outcome.
