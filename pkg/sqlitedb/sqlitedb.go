@@ -143,16 +143,15 @@ func New(path string) (*sql.DB, error) {
 	}
 
 	// M2 (migrations/000011): WishCairn 슬롯 backfill for reused DBs.
-	// PG migration 의 backfill SQL 과 동일 효과. ON CONFLICT DO NOTHING 이라 신규 DB 에서는 no-op.
+	// SQLite 의 modernc parser 가 INSERT ... SELECT ... ON CONFLICT 폼을 거부 → INSERT OR IGNORE.
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO wish_cairn_slots (player_id, slot_index, started_at)
+		INSERT OR IGNORE INTO wish_cairn_slots (player_id, slot_index, started_at)
 		SELECT p.id, s.idx,
 		       strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || (s.idx * 30) || ' seconds')
 		FROM players p
 		CROSS JOIN (
 		    SELECT 0 AS idx UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
 		) s
-		ON CONFLICT (player_id, slot_index) DO NOTHING
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("backfill wish_cairn_slots: %w", err)

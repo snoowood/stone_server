@@ -59,48 +59,30 @@ type syncResponse struct {
 }
 
 // Sync handles POST /api/v1/player/sync.
-// It computes enlightenment earned since last_sync_at using the player's
-// current enlightenment_rate and credits it, then updates last_sync_at = now.
+// passive gain 정산을 한 atomic SQL 안에서 처리 — /gacha/pull 의 accrual 과 동일 패턴.
+// 동시 호출 시 같은 elapsed window 가 두 번 가산되는 race 방지.
 func (h *Handler) Sync(c *gin.Context) {
 	playerID := c.GetString("player_id")
 	ctx := c.Request.Context()
 
-	var lastSyncAt *time.Time
-	var rate float64
-	err := h.db.QueryRow(ctx, `
-		SELECT enlightenment_rate, last_sync_at
-		FROM player_states
-		WHERE player_id = ?
-	`, playerID).Scan(&rate, store.ScanNullTime(&lastSyncAt))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "player state not found", "code": "NOT_FOUND"})
-			return
-		}
-		log.Error().Err(err).Msg("player sync: query player_states")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
-		return
-	}
-
-	now := time.Now().UTC()
-	var delta float64
-	if lastSyncAt != nil {
-		elapsed := now.Sub(*lastSyncAt).Seconds()
-		if elapsed > 0 {
-			delta = elapsed * rate
-		}
-	}
-
 	var newPts float64
 	var newSyncAt *time.Time
-	err = h.db.QueryRow(ctx, `
+	err := h.db.QueryRow(ctx, `
 		UPDATE player_states
-		SET enlightenment_pts = enlightenment_pts + ?,
-		    last_sync_at      = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-		    updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		SET enlightenment_pts = enlightenment_pts +
+		    COALESCE(
+		        (CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
+		        0
+		    ),
+		    last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE player_id = ?
 		RETURNING enlightenment_pts, last_sync_at
-	`, delta, playerID).Scan(&newPts, store.ScanNullTime(&newSyncAt))
+	`, playerID).Scan(&newPts, store.ScanNullTime(&newSyncAt))
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "player state not found", "code": "NOT_FOUND"})
+		return
+	}
 	if err != nil {
 		log.Error().Err(err).Msg("player sync: update enlightenment_pts")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
