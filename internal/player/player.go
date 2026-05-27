@@ -67,13 +67,14 @@ func (h *Handler) Sync(c *gin.Context) {
 
 	var newPts float64
 	var newSyncAt *time.Time
+	// MAX(0, ...) 로 음수 elapsed (clock skew, 미래 last_sync_at) 시 잔고 감소 방지.
 	err := h.db.QueryRow(ctx, `
 		UPDATE player_states
 		SET enlightenment_pts = enlightenment_pts +
-		    COALESCE(
+		    MAX(0, COALESCE(
 		        (CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
 		        0
-		    ),
+		    )),
 		    last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
 		    updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE player_id = ?
@@ -162,7 +163,9 @@ func (h *Handler) GetState(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
-	if len(slots) == 0 {
+	// partial init (1~4 슬롯만 있는 상태) 도 lazy 보강 — InitializeSlots 가 ON CONFLICT DO NOTHING
+	// 멱등이라 빠진 인덱스만 채워짐.
+	if len(slots) < cairn.SlotCount {
 		if err := cairn.InitializeSlots(ctx, h.db, playerID, time.Now()); err != nil {
 			log.Error().Err(err).Msg("player state: lazy init cairn slots")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})

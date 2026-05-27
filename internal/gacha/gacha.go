@@ -206,22 +206,23 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	//      별도 SELECT → 코드 계산 → UPDATE 분리하면 동일 elapsed window 를 두 번 가산할 race
 	//      가능 (e.g. /player/sync 와 동시). 한 SQL 안에서 pending 을 계산해 atomic 보장.
 	//      SQLite strftime/CAST 사용 — 기존 코드와 동일 패턴 (SQLite-우선).
+	// MAX(0, ...) 로 음수 elapsed (clock skew) 시 잔고 감소 방지.
 	var newBalance float64
 	var lastSyncAt time.Time
 	err = tx.QueryRow(ctx, `
 		UPDATE player_states
 		SET enlightenment_pts = enlightenment_pts +
-			COALESCE(
+			MAX(0, COALESCE(
 				(CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
 				0
-			) - ?,
+			)) - ?,
 		    last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE player_id = ?
 		  AND enlightenment_pts +
-		      COALESCE(
+		      MAX(0, COALESCE(
 		          (CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
 		          0
-		      ) >= ?
+		      )) >= ?
 		RETURNING enlightenment_pts, last_sync_at
 	`, h.cfg.PullCost, playerID, h.cfg.PullCost).Scan(&newBalance, store.ScanTime(&lastSyncAt))
 	if errors.Is(err, sql.ErrNoRows) {
