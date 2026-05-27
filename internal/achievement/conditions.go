@@ -62,9 +62,11 @@ func checkFirstPull(ctx context.Context, db achievementDB, playerID string) (boo
 }
 
 func checkRareUnlock(ctx context.Context, db achievementDB, playerID string) (bool, error) {
+	// M3: 집계형 inventories — COALESCE(SUM(count), 0) 로 stack 까지 합산.
+	// 본 조건은 `>= 1` 이라 행 수와 SUM 결과는 동일하지만, 일관성을 위해 SUM 사용.
 	var count int
 	if err := db.QueryRow(ctx,
-		"SELECT COUNT(*) FROM inventories WHERE player_id = ? AND rarity IN ('rare','unique','legendary')",
+		"SELECT COALESCE(SUM(count), 0) FROM inventories WHERE player_id = ? AND rarity IN ('rare','unique','legendary')",
 		playerID,
 	).Scan(&count); err != nil {
 		return false, err
@@ -75,7 +77,7 @@ func checkRareUnlock(ctx context.Context, db achievementDB, playerID string) (bo
 func checkLegendary(ctx context.Context, db achievementDB, playerID string) (bool, error) {
 	var count int
 	if err := db.QueryRow(ctx,
-		"SELECT COUNT(*) FROM inventories WHERE player_id = ? AND rarity = 'legendary'",
+		"SELECT COALESCE(SUM(count), 0) FROM inventories WHERE player_id = ? AND rarity = 'legendary'",
 		playerID,
 	).Scan(&count); err != nil {
 		return false, err
@@ -107,9 +109,11 @@ func checkStreakDays(ctx context.Context, db achievementDB, playerID string, thr
 }
 
 func checkCollector(ctx context.Context, db achievementDB, playerID string) (bool, error) {
+	// M3: 집계형 inventories — "10 items owned" 의도라 SUM(count) 로 합산 (중복 포함).
+	// 만약 "10 종류" 의도라면 COUNT(*) 로 되돌릴 것 — 현 코드는 보유 총량 기준.
 	var count int
 	if err := db.QueryRow(ctx,
-		"SELECT COUNT(*) FROM inventories WHERE player_id = ?",
+		"SELECT COALESCE(SUM(count), 0) FROM inventories WHERE player_id = ?",
 		playerID,
 	).Scan(&count); err != nil {
 		return false, err
