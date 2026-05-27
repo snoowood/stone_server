@@ -72,6 +72,21 @@ func rowErrResult(err error) store.Row {
 	return &mockRow{scanFn: func(dest ...any) error { return err }}
 }
 
+// rowRateAndLastSync mocks the SELECT enlightenment_rate, last_sync_at row.
+// lastSync == nil 이면 NULL.
+func rowRateAndLastSync(rate float64, lastSync *time.Time) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*float64)) = rate
+		if sc, ok := dest[1].(sql.Scanner); ok {
+			if lastSync == nil {
+				return sc.Scan(nil)
+			}
+			return sc.Scan(lastSync.UTC().Format(time.RFC3339))
+		}
+		return errors.New("rowRateAndLastSync: dest[1] not sql.Scanner")
+	}}
+}
+
 // rowTimeStrResult mocks an UPDATE ... RETURNING <ts column> response.
 // Drives a store.ScanTime scanner with an RFC3339 string.
 func rowTimeStrResult(t time.Time) store.Row {
@@ -176,11 +191,6 @@ func callPullWithSlot(h *Handler, playerID string, slotIndex int) *httptest.Resp
 	return w
 }
 
-// completeSlotStartedAt returns a started_at value far enough in the past that
-// cairn.Derive marks the slot as complete (>= MaxLayers × SpawnInterval ago).
-func completeSlotStartedAt() time.Time {
-	return time.Now().UTC().Add(-time.Hour)
-}
 
 // --- cooldown / getNextGachaAt tests ---
 
@@ -276,15 +286,17 @@ func TestPull_OutOfRangeSlotIndex_BadRequest(t *testing.T) {
 }
 
 // M4: 슬롯이 complete 가 아닐 때 → 403 CAIRN_INCOMPLETE.
+// 새 흐름: CAS UPDATE 가 affected=0 → LoadSlotStartedAt 로 존재 확인 → INCOMPLETE.
 func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			// 방금 시작된 슬롯 — layer 0, building.
-			rowTimeStrResult(time.Now().UTC()),
+			rowTimeStrResult(time.Now().UTC()), // LoadSlotStartedAt: slot 존재, 최근 시작 (incomplete)
 		},
-		execQueue: []func() (store.Result, error){},
+		execQueue: []func() (store.Result, error){
+			okExec(0), // CAS slot reset: affected=0 (incomplete 라 조건 미달)
+		},
 	}
 	db := &mockDB{tx: tx}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
@@ -307,9 +319,11 @@ func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowErrResult(sql.ErrNoRows), // cairn.LoadSlotStartedAt → no rows
+			rowErrResult(sql.ErrNoRows), // LoadSlotStartedAt: 슬롯 자체가 없음
 		},
-		execQueue: []func() (store.Result, error){},
+		execQueue: []func() (store.Result, error){
+			okExec(0), // CAS slot reset: affected=0 (slot 자체 없음)
+		},
 	}
 	db := &mockDB{tx: tx}
 	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
@@ -349,13 +363,14 @@ func TestPull_CooldownActive(t *testing.T) {
 func TestExecPull_InsufficientPoints(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
-	// UPDATE-RETURNING with WHERE pts >= cost returns no rows when balance is short.
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate (complete)
-			rowErrNoRows(),                            // deduct returns no rows → InsufficientPoints
+			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
+			rowErrNoRows(),               // deduct returns no rows → InsufficientPoints
 		},
-		execQueue: []func() (store.Result, error){},
+		execQueue: []func() (store.Result, error){
+			okExec(1), // CAS slot reset (complete)
+		},
 	}
 	db := &mockDB{tx: tx}
 
@@ -378,13 +393,14 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 
 	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
-		// M3: inventory upsert 가 INSERT ... ON CONFLICT DO UPDATE RETURNING count 라 QueryRow 로 이동.
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
-			rowFloat64Result(100),                     // deduct → 200 - 100
-			rowErrResult(dbErr),                       // inventory UPSERT RETURNING — fails → should rollback
+			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
+			rowFloat64Result(100),        // deduct → 200 - 100
+			rowErrResult(dbErr),          // inventory UPSERT RETURNING — fails → rollback
 		},
-		execQueue: []func() (store.Result, error){},
+		execQueue: []func() (store.Result, error){
+			okExec(1), // CAS slot reset
+		},
 	}
 	db := &mockDB{tx: tx}
 
@@ -408,13 +424,13 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
-			rowFloat64Result(100),                     // deduct → post-deduct balance
-			rowIntResult(1),                           // inventory UPSERT RETURNING count = 1 (new)
-			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
+			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
+			rowFloat64Result(100),        // deduct → post-deduct balance
+			rowIntResult(1),              // inventory UPSERT RETURNING count = 1 (new)
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(1),       // wish_cairn_slots reset
+			okExec(1),       // CAS slot reset
+			okExec(1),       // next_gacha_at UPDATE
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -439,13 +455,13 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
-			rowFloat64Result(400),                     // deduct → 500-100
-			rowIntResult(1),                           // inventory UPSERT RETURNING count = 1 (new item)
-			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
+			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at (no prior sync)
+			rowFloat64Result(400),        // deduct → 500-100
+			rowIntResult(1),              // inventory UPSERT RETURNING count = 1 (new item)
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(1), // wish_cairn_slots reset
+			okExec(1), // CAS slot reset
+			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}
@@ -683,13 +699,13 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(completeSlotStartedAt()), // cairn slot validate
-			rowFloat64Result(400),                     // deduct (refund 분기 없음)
-			rowIntResult(3),                           // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
-			rowTimeStrResult(time.Now().UTC()),        // next_gacha_at RETURNING last_sync_at
+			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
+			rowFloat64Result(400),        // deduct (refund 분기 없음)
+			rowIntResult(3),              // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
 		},
 		execQueue: []func() (store.Result, error){
-			okExec(1), // wish_cairn_slots reset
+			okExec(1), // CAS slot reset
+			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}

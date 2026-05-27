@@ -175,28 +175,60 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	}
 	defer tx.Rollback(ctx)
 
-	// 0. WishCairn slot 검증 — 트랜잭션 안에서 started_at 을 읽어 derive.
-	//    검증을 차감보다 먼저 둬서 미완성 슬롯에 잔고가 소모되지 않게 한다.
-	startedAt, err := cairn.LoadSlotStartedAt(ctx, tx, playerID, slotIndex)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errCairnSlotNotFound
-	}
+	now := time.Now().UTC().Truncate(time.Second)
+	nowStr := now.Format(time.RFC3339)
+
+	// 0. WishCairn slot 검증 + reset 을 atomic CAS UPDATE 로. complete 조건 (started_at <=
+	//    now - MaxLayers × interval) 인 슬롯만 reset. 동시 두 요청이 같은 slot 을 claim
+	//    하려고 해도 한 쪽만 affected=1, 다른 쪽은 affected=0 → CAIRN_INCOMPLETE.
+	threshold := now.Add(-time.Duration(cairn.MaxLayers*cairn.SpawnIntervalSeconds) * time.Second)
+	res, err := tx.Exec(ctx,
+		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ? AND started_at <= ?",
+		nowStr, nowStr, playerID, slotIndex, threshold.Format(time.RFC3339),
+	)
 	if err != nil {
 		return nil, err
 	}
-	if cairn.Derive(slotIndex, startedAt, time.Now()).Status != cairn.StatusComplete {
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		// slot 존재 여부 확인으로 INCOMPLETE / NOT_FOUND 구분.
+		_, err := cairn.LoadSlotStartedAt(ctx, tx, playerID, slotIndex)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errCairnSlotNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
 		return nil, errCairnIncomplete
 	}
 
-	// 1+2. Atomic read-and-deduct. WHERE pts >= cost guarantees no overdraft
-	// under concurrent pulls.
+	// 1. 가챠 시점 passive gain 정산. /player/sync 가 dead 라 가챠가 유일한 권위 sync 시점.
+	//    last_sync_at 기준 elapsed × rate 를 잔고에 가산 후 deduct.
+	var rate float64
+	var lastSyncPtr *time.Time
+	if err := tx.QueryRow(ctx,
+		"SELECT enlightenment_rate, last_sync_at FROM player_states WHERE player_id = ?",
+		playerID,
+	).Scan(&rate, store.ScanNullTime(&lastSyncPtr)); err != nil {
+		return nil, err
+	}
+	pendingGain := 0.0
+	if lastSyncPtr != nil {
+		elapsed := now.Sub(*lastSyncPtr).Seconds()
+		if elapsed > 0 {
+			pendingGain = elapsed * rate
+		}
+	}
+
+	// 2. Atomic accrue + deduct + last_sync_at 갱신. WHERE 조건이 accrue 후 잔고 기준.
 	var newBalance float64
 	err = tx.QueryRow(ctx, `
 		UPDATE player_states
-		SET enlightenment_pts = enlightenment_pts - ?
-		WHERE player_id = ? AND enlightenment_pts >= ?
+		SET enlightenment_pts = enlightenment_pts + ? - ?,
+		    last_sync_at = ?
+		WHERE player_id = ? AND enlightenment_pts + ? >= ?
 		RETURNING enlightenment_pts
-	`, h.cfg.PullCost, playerID, h.cfg.PullCost).Scan(&newBalance)
+	`, pendingGain, h.cfg.PullCost, nowStr, playerID, pendingGain, h.cfg.PullCost).Scan(&newBalance)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errInsufficientPoints
 	}
@@ -229,29 +261,18 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
 	refundPts := 0.0
 
-	// 6. Set next_gacha_at + last_sync_at. last_sync_at 갱신으로 /player/sync 가 호출되지
-	//    않아도 클라 외삽 anchor 가 가챠 시점으로 전진한다.
-	now := time.Now().UTC().Truncate(time.Second)
+	// 6. Set next_gacha_at. last_sync_at 은 step 2 에서 이미 now 로 갱신됨.
+	//    슬롯 reset 은 step 0 에서 이미 atomic CAS 로 완료.
 	nextGachaAt := now.Add(cooldownTTL)
-	var lastSyncAt time.Time
-	if err := tx.QueryRow(ctx,
-		"UPDATE player_states SET next_gacha_at = ?, last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ? RETURNING last_sync_at",
-		nextGachaAt.Format(time.RFC3339), playerID,
-	).Scan(store.ScanTime(&lastSyncAt)); err != nil {
-		return nil, err
-	}
-
-	// 7. Slot reset — started_at = now 로 재시작. 다른 슬롯들은 자기 started_at 그대로라
-	//    자연스럽게 시차가 유지된다.
-	nowStr := now.Format(time.RFC3339)
+	lastSyncAt := now
 	if _, err := tx.Exec(ctx,
-		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ?",
-		nowStr, nowStr, playerID, slotIndex,
+		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
+		nextGachaAt.Format(time.RFC3339), playerID,
 	); err != nil {
 		return nil, err
 	}
 
-	// 8. Append gacha log
+	// 7. Append gacha log
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO gacha_logs
 		    (id, player_id, item_id, rarity, is_duplicate, cost_points, refund_points, gacha_seed_hash)
