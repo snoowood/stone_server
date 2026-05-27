@@ -202,33 +202,28 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, errCairnIncomplete
 	}
 
-	// 1. 가챠 시점 passive gain 정산. /player/sync 가 dead 라 가챠가 유일한 권위 sync 시점.
-	//    last_sync_at 기준 elapsed × rate 를 잔고에 가산 후 deduct.
-	var rate float64
-	var lastSyncPtr *time.Time
-	if err := tx.QueryRow(ctx,
-		"SELECT enlightenment_rate, last_sync_at FROM player_states WHERE player_id = ?",
-		playerID,
-	).Scan(&rate, store.ScanNullTime(&lastSyncPtr)); err != nil {
-		return nil, err
-	}
-	pendingGain := 0.0
-	if lastSyncPtr != nil {
-		elapsed := now.Sub(*lastSyncPtr).Seconds()
-		if elapsed > 0 {
-			pendingGain = elapsed * rate
-		}
-	}
-
-	// 2. Atomic accrue + deduct + last_sync_at 갱신. WHERE 조건이 accrue 후 잔고 기준.
+	// 1+2. Atomic accrue + deduct + last_sync_at 갱신을 한 UPDATE 로.
+	//      별도 SELECT → 코드 계산 → UPDATE 분리하면 동일 elapsed window 를 두 번 가산할 race
+	//      가능 (e.g. /player/sync 와 동시). 한 SQL 안에서 pending 을 계산해 atomic 보장.
+	//      SQLite strftime/CAST 사용 — 기존 코드와 동일 패턴 (SQLite-우선).
 	var newBalance float64
+	var lastSyncAt time.Time
 	err = tx.QueryRow(ctx, `
 		UPDATE player_states
-		SET enlightenment_pts = enlightenment_pts + ? - ?,
-		    last_sync_at = ?
-		WHERE player_id = ? AND enlightenment_pts + ? >= ?
-		RETURNING enlightenment_pts
-	`, pendingGain, h.cfg.PullCost, nowStr, playerID, pendingGain, h.cfg.PullCost).Scan(&newBalance)
+		SET enlightenment_pts = enlightenment_pts +
+			COALESCE(
+				(CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
+				0
+			) - ?,
+		    last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE player_id = ?
+		  AND enlightenment_pts +
+		      COALESCE(
+		          (CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', last_sync_at) AS REAL)) * enlightenment_rate,
+		          0
+		      ) >= ?
+		RETURNING enlightenment_pts, last_sync_at
+	`, h.cfg.PullCost, playerID, h.cfg.PullCost).Scan(&newBalance, store.ScanTime(&lastSyncAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errInsufficientPoints
 	}
@@ -261,10 +256,9 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
 	refundPts := 0.0
 
-	// 6. Set next_gacha_at. last_sync_at 은 step 2 에서 이미 now 로 갱신됨.
-	//    슬롯 reset 은 step 0 에서 이미 atomic CAS 로 완료.
+	// 6. Set next_gacha_at. last_sync_at 은 step 2 의 atomic UPDATE 가 갱신함.
+	//    슬롯 reset 은 step 0 에서 atomic CAS 로 완료.
 	nextGachaAt := now.Add(cooldownTTL)
-	lastSyncAt := now
 	if _, err := tx.Exec(ctx,
 		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
 		nextGachaAt.Format(time.RFC3339), playerID,

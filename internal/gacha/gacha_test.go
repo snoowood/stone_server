@@ -72,18 +72,15 @@ func rowErrResult(err error) store.Row {
 	return &mockRow{scanFn: func(dest ...any) error { return err }}
 }
 
-// rowRateAndLastSync mocks the SELECT enlightenment_rate, last_sync_at row.
-// lastSync == nil 이면 NULL.
-func rowRateAndLastSync(rate float64, lastSync *time.Time) store.Row {
+// rowBalanceAndSync mocks the UPDATE ... RETURNING enlightenment_pts, last_sync_at row
+// produced by the atomic accrue+deduct step.
+func rowBalanceAndSync(balance float64, lastSync time.Time) store.Row {
 	return &mockRow{scanFn: func(dest ...any) error {
-		*(dest[0].(*float64)) = rate
+		*(dest[0].(*float64)) = balance
 		if sc, ok := dest[1].(sql.Scanner); ok {
-			if lastSync == nil {
-				return sc.Scan(nil)
-			}
 			return sc.Scan(lastSync.UTC().Format(time.RFC3339))
 		}
-		return errors.New("rowRateAndLastSync: dest[1] not sql.Scanner")
+		return errors.New("rowBalanceAndSync: dest[1] not sql.Scanner")
 	}}
 }
 
@@ -365,8 +362,7 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
-			rowErrNoRows(),               // deduct returns no rows → InsufficientPoints
+			rowErrNoRows(), // atomic accrue+deduct returns no rows → InsufficientPoints
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset (complete)
@@ -394,9 +390,8 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
-			rowFloat64Result(100),        // deduct → 200 - 100
-			rowErrResult(dbErr),          // inventory UPSERT RETURNING — fails → rollback
+			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
+			rowErrResult(dbErr),                // inventory UPSERT RETURNING — fails → rollback
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset
@@ -424,9 +419,8 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
-			rowFloat64Result(100),        // deduct → post-deduct balance
-			rowIntResult(1),              // inventory UPSERT RETURNING count = 1 (new)
+			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
+			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1),       // CAS slot reset
@@ -455,9 +449,8 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at (no prior sync)
-			rowFloat64Result(400),        // deduct → 500-100
-			rowIntResult(1),              // inventory UPSERT RETURNING count = 1 (new item)
+			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct → 500-100
+			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new item)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset
@@ -699,9 +692,8 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowRateAndLastSync(1.0, nil), // SELECT rate + last_sync_at
-			rowFloat64Result(400),        // deduct (refund 분기 없음)
-			rowIntResult(3),              // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
+			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct (refund 분기 없음)
+			rowIntResult(3),                    // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset

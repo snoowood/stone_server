@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -124,12 +125,22 @@ func New(path string) (*sql.DB, error) {
 
 	// Legacy cleanup: M0 (migrations/000010) dropped player_states.pity_count.
 	// SQLite mode bypasses migrations/, so apply the same change here for reused DBs.
-	// On fresh DBs the column is absent; the error is intentionally swallowed.
-	_, _ = db.ExecContext(ctx, "ALTER TABLE player_states DROP COLUMN pity_count")
+	// 신규 DB 에서는 컬럼이 이미 없어 "no such column" 에러만 swallow.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE player_states DROP COLUMN pity_count"); err != nil {
+		if !strings.Contains(err.Error(), "no such column") {
+			db.Close()
+			return nil, fmt.Errorf("drop pity_count: %w", err)
+		}
+	}
 
 	// M3 (migrations/000012): inventories.count column on reused DBs.
-	// On fresh DBs the column already exists; the duplicate-column error is swallowed.
-	_, _ = db.ExecContext(ctx, "ALTER TABLE inventories ADD COLUMN count INTEGER NOT NULL DEFAULT 1")
+	// 이미 존재하는 신규 DB 에서는 "duplicate column" 에러만 swallow. 다른 에러는 fail-fast.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE inventories ADD COLUMN count INTEGER NOT NULL DEFAULT 1"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add inventories.count: %w", err)
+		}
+	}
 
 	return db, nil
 }
