@@ -24,13 +24,14 @@ const (
 )
 
 type Handler struct {
-	db  store.DB
-	kv  kvstore.KVStore
-	cfg GameConfig
+	db   store.DB
+	kv   kvstore.KVStore
+	cfg  GameConfig
+	pool *SkinPool
 }
 
-func NewHandler(db store.DB, kv kvstore.KVStore) *Handler {
-	return &Handler{db: db, kv: kv, cfg: DefaultConfig}
+func NewHandler(db store.DB, kv kvstore.KVStore, pool *SkinPool) *Handler {
+	return &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: pool}
 }
 
 type statusResponse struct {
@@ -233,7 +234,7 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	}
 
 	// 3. RNG
-	result, err := Roll()
+	result, err := h.pool.Roll()
 	if err != nil {
 		return nil, err
 	}

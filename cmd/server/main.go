@@ -121,7 +121,13 @@ func main() {
 	steamClient := auth.NewSteamClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	authHandler := auth.NewHandler(sdb, kv, steamClient, privKey)
 	playerHandler := player.NewHandler(sdb, kv)
-	gachaHandler := gacha.NewHandler(sdb, kv)
+
+	skinPool, err := gacha.LoadSkinPool(cfg.SkinsCSVPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", cfg.SkinsCSVPath).Msg("skin pool load failed")
+	}
+	log.Info().Int("loaded", skinPool.Stats().Loaded).Msg("skin pool ready")
+	gachaHandler := gacha.NewHandler(sdb, kv, skinPool)
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
 
