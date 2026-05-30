@@ -135,13 +135,6 @@ func main() {
 		log.Info().Msg("redis client ready")
 	}
 
-	// Legacy 더미 풀(common_stone_01 등) 잔여 행 정리. SkinPool 검증을 통과한
-	// 뒤에만 수행하므로 잘못된 CSV 로 부팅 시 데이터 손실 없음. 멱등.
-	// PG / SQLite 모드 모두 동작(SQLite 모드는 migrations/ 미경유).
-	if err := gacha.PurgeLegacyItemIDs(ctx, sdb); err != nil {
-		log.Fatal().Err(err).Msg("purge legacy gacha item_ids failed")
-	}
-
 	privKey, err := auth.ParsePrivateKey(cfg.JWTPrivKey)
 	if err != nil {
 		log.Fatal().Err(err).Msg("parse jwt private key failed")
