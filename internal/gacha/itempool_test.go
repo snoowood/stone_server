@@ -126,6 +126,24 @@ d,Accessory,Unique
 	}
 }
 
+// TestParseSkinPool_AcceptsBOM: Excel/Sheets 가 UTF-8 로 재추출하면 첫 셀 앞에
+// BOM(U+FEFF) 이 붙는다. 그래도 정상 파일로 받아들이는지 가드한다.
+func TestParseSkinPool_AcceptsBOM(t *testing.T) {
+	const fixture = "\xef\xbb\xbfskinId,partType,rarity\n" +
+		"a,Accessory,Common\n" +
+		"b,Accessory,Uncommon\n" +
+		"c,Accessory,Rare\n" +
+		"d,Accessory,Unique\n" +
+		"e,Accessory,Legendary\n"
+	p, err := parseSkinPool(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("BOM-prefixed header should be tolerated: %v", err)
+	}
+	if p.Stats().Loaded != 5 {
+		t.Errorf("Loaded = %d, want 5", p.Stats().Loaded)
+	}
+}
+
 // TestParseSkinPool_BadHeader_Error.
 func TestParseSkinPool_BadHeader_Error(t *testing.T) {
 	const csv = `id,part,rar

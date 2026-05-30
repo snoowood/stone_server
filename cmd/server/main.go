@@ -126,7 +126,20 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Str("path", cfg.SkinsCSVPath).Msg("skin pool load failed")
 	}
-	log.Info().Int("loaded", skinPool.Stats().Loaded).Msg("skin pool ready")
+	// 스킵 행이 단 하나라도 있으면 무음 데이터 누락으로 라이브 드롭률이 바뀐다.
+	// 부팅 단계에서 거부해 운영 풀이 잘못 로드되는 것을 차단.
+	skinStats := skinPool.Stats()
+	if skinStats.SkippedBadRarity+skinStats.SkippedBadPart+skinStats.SkippedMalformed > 0 {
+		log.Fatal().
+			Str("path", cfg.SkinsCSVPath).
+			Int("bad_rarity", skinStats.SkippedBadRarity).
+			Int("bad_part", skinStats.SkippedBadPart).
+			Int("malformed", skinStats.SkippedMalformed).
+			Int("loaded", skinStats.Loaded).
+			Int("total", skinStats.Total).
+			Msg("skin pool had skipped rows — refusing to start (silently truncated pool would change drop odds)")
+	}
+	log.Info().Int("loaded", skinStats.Loaded).Msg("skin pool ready")
 	gachaHandler := gacha.NewHandler(sdb, kv, skinPool)
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)

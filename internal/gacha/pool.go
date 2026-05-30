@@ -61,6 +61,11 @@ func parseSkinPool(r io.Reader) (*SkinPool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read header: %w", err)
 	}
+	// Excel/Sheets 가 UTF-8 로 재추출하면 첫 셀 앞에 BOM(U+FEFF) 이 붙는다.
+	// 정상 파일을 부팅 시 거부하지 않도록 첫 셀에서만 BOM 을 떼고 검증한다.
+	if len(header) > 0 {
+		header[0] = strings.TrimPrefix(header[0], "\xef\xbb\xbf")
+	}
 	if len(header) != 3 ||
 		strings.TrimSpace(header[0]) != "skinId" ||
 		strings.TrimSpace(header[1]) != "partType" ||
