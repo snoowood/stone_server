@@ -25,7 +25,7 @@ func (h *Handler) DevToken(c *gin.Context) {
 		return
 	}
 
-	if err := initPlayerState(ctx, h.db, playerID); err != nil {
+	if err := initPlayerState(ctx, h.db, h.cairnCfg, playerID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}

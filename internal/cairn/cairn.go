@@ -16,18 +16,24 @@ import (
 	"github.com/gensdeis/stone-server/pkg/store"
 )
 
-// Game balance — 본 마일스톤은 단일 인스턴스 상수.
-// 후속 마일스톤에서 서버 config 로 분리될 가능성 있음.
-const (
-	SlotCount             = 5
-	MaxLayers             = 5
-	SpawnIntervalSeconds  = 30
-)
+// Config holds WishCairn balance dimensions. Previously compile-time consts;
+// now injected from the shared game-config.xml (pkg/gameconfig) at boot.
+type Config struct {
+	SlotCount            int
+	MaxLayers            int
+	SpawnIntervalSeconds int
+}
+
+// Default mirrors the historical const values (5/5/30) for tests and reference.
+// It is NOT an automatic runtime fallback: production always injects the
+// XML-derived Config, and an invalid/absent XML fails the boot (pkg/gameconfig),
+// so a zero-value Config never reaches a handler.
+var Default = Config{SlotCount: 5, MaxLayers: 5, SpawnIntervalSeconds: 30}
 
 // PhaseOffset 은 슬롯 간 시작 시각 차이.
 // SpawnInterval × MaxLayers / SlotCount = 30s 마다 한 슬롯씩 완성되는 페이스.
-func PhaseOffset() time.Duration {
-	return time.Duration(SpawnIntervalSeconds*MaxLayers/SlotCount) * time.Second
+func (c Config) PhaseOffset() time.Duration {
+	return time.Duration(c.SpawnIntervalSeconds*c.MaxLayers/c.SlotCount) * time.Second
 }
 
 // SlotStatus reflects derived progress of a single slot.
@@ -48,17 +54,17 @@ type SlotState struct {
 
 // Derive computes layer_count and status from started_at and the current instant.
 // elapsed < 0 (clock skew) is clamped to 0.
-func Derive(slotIndex int, startedAt time.Time, now time.Time) SlotState {
+func (c Config) Derive(slotIndex int, startedAt time.Time, now time.Time) SlotState {
 	elapsed := now.Sub(startedAt).Seconds()
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	layers := int(elapsed) / SpawnIntervalSeconds
-	if layers > MaxLayers {
-		layers = MaxLayers
+	layers := int(elapsed) / c.SpawnIntervalSeconds
+	if layers > c.MaxLayers {
+		layers = c.MaxLayers
 	}
 	status := StatusBuilding
-	if layers >= MaxLayers {
+	if layers >= c.MaxLayers {
 		status = StatusComplete
 	}
 	return SlotState{
@@ -71,9 +77,9 @@ func Derive(slotIndex int, startedAt time.Time, now time.Time) SlotState {
 
 // InitializeSlots inserts SlotCount rows for a new player with staggered started_at.
 // Idempotent: ON CONFLICT DO NOTHING so re-running on existing rows is safe.
-func InitializeSlots(ctx context.Context, db store.DB, playerID string, now time.Time) error {
-	phase := PhaseOffset()
-	for i := 0; i < SlotCount; i++ {
+func (c Config) InitializeSlots(ctx context.Context, db store.DB, playerID string, now time.Time) error {
+	phase := c.PhaseOffset()
+	for i := 0; i < c.SlotCount; i++ {
 		startedAt := now.Add(-time.Duration(i) * phase).UTC().Truncate(time.Second)
 		_, err := db.Exec(ctx,
 			"INSERT INTO wish_cairn_slots (player_id, slot_index, started_at) VALUES (?, ?, ?) ON CONFLICT (player_id, slot_index) DO NOTHING",
@@ -88,7 +94,7 @@ func InitializeSlots(ctx context.Context, db store.DB, playerID string, now time
 
 // LoadSlots reads all slots for a player as their derived state at `now`.
 // Returns rows ordered by slot_index ascending.
-func LoadSlots(ctx context.Context, db store.DB, playerID string, now time.Time) ([]SlotState, error) {
+func (c Config) LoadSlots(ctx context.Context, db store.DB, playerID string, now time.Time) ([]SlotState, error) {
 	rows, err := db.Query(ctx,
 		"SELECT slot_index, started_at FROM wish_cairn_slots WHERE player_id = ? ORDER BY slot_index ASC",
 		playerID,
@@ -98,14 +104,14 @@ func LoadSlots(ctx context.Context, db store.DB, playerID string, now time.Time)
 	}
 	defer rows.Close()
 
-	slots := make([]SlotState, 0, SlotCount)
+	slots := make([]SlotState, 0, c.SlotCount)
 	for rows.Next() {
 		var idx int
 		var startedAt time.Time
 		if err := rows.Scan(&idx, store.ScanTime(&startedAt)); err != nil {
 			return nil, fmt.Errorf("cairn.LoadSlots: scan: %w", err)
 		}
-		slots = append(slots, Derive(idx, startedAt, now))
+		slots = append(slots, c.Derive(idx, startedAt, now))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("cairn.LoadSlots: iterate: %w", err)

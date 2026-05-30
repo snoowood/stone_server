@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Stone 공통 게임 설정 — 두 레포 공통 파일 (바이트 단위 동일, CI 해시 검사)
+  단일 소스(SOURCE OF TRUTH): stone_project/Assets/Resources/game-config.xml
+  동기화 사본:                 stone_server/Data/game-config.xml
+  명세:                        stone_server/docs/plans/game-config-xml-schema.md
+  ⚠️ 항상 stone_project 원본만 수정. stone_server 사본은 동기화 스크립트로만 갱신.
+-->
+<gameConfig version="1">
+  <!-- 가챠(WishCairn pull) -->
+  <gacha>
+    <pullCost>100</pullCost>                <!-- float, enlightenment 포인트 -->
+    <cooldownSeconds>1800</cooldownSeconds> <!-- int, 30분 = 1800초 -->
+  </gacha>
+  <!-- WishCairn 돌탑 성장 -->
+  <cairn>
+    <slotCount>5</slotCount>                        <!-- int, 슬롯 수 -->
+    <maxLayers>5</maxLayers>                         <!-- int, 완성 필요 레이어 -->
+    <spawnIntervalSeconds>30</spawnIntervalSeconds>  <!-- int, 레이어 1단 생성 간격 -->
+  </cairn>
+</gameConfig>

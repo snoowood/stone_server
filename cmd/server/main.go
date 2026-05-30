@@ -18,6 +18,7 @@ import (
 
 	"github.com/gensdeis/stone-server/internal/achievement"
 	"github.com/gensdeis/stone-server/internal/auth"
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/internal/gacha"
 	"github.com/gensdeis/stone-server/internal/health"
 	"github.com/gensdeis/stone-server/internal/middleware"
@@ -25,6 +26,7 @@ import (
 	"github.com/gensdeis/stone-server/internal/timeguard"
 	"github.com/gensdeis/stone-server/pkg/cache"
 	"github.com/gensdeis/stone-server/pkg/config"
+	"github.com/gensdeis/stone-server/pkg/gameconfig"
 	"github.com/gensdeis/stone-server/pkg/db"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/logger"
@@ -63,6 +65,29 @@ func main() {
 	}
 	log.Info().Int("loaded", skinStats.Loaded).Msg("skin pool ready")
 
+	// 공통 game-config.xml 로드 (클라/서버 단일 소스). fail-fast on malformed/out-of-range.
+	gameCfg, err := gameconfig.Load(cfg.GameConfigXMLPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", cfg.GameConfigXMLPath).Msg("game config load failed")
+	}
+	if gameCfg.Version != gameconfig.ExpectedVersion {
+		// R3: version 불일치는 경고 후 진행. 구조적 깨짐은 위 Load 의 누락 키 검증이 차단.
+		log.Warn().
+			Int("file_version", gameCfg.Version).
+			Int("expected_version", gameconfig.ExpectedVersion).
+			Msg("game config version mismatch — proceeding")
+	}
+	cairnCfg := cairn.Config{
+		SlotCount:            gameCfg.SlotCount,
+		MaxLayers:            gameCfg.MaxLayers,
+		SpawnIntervalSeconds: gameCfg.SpawnIntervalSeconds,
+	}
+	gachaCfg := gacha.GameConfig{
+		PullCost: gameCfg.PullCost,
+		Cooldown: time.Duration(gameCfg.CooldownSeconds) * time.Second,
+	}
+	log.Info().Int("version", gameCfg.Version).Msg("game config ready")
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -73,7 +98,7 @@ func main() {
 
 	if cfg.SQLitePath != "" {
 		// ── SQLite mode (lightweight, no external services required) ──────────
-		rawDB, err := sqlitedb.New(cfg.SQLitePath)
+		rawDB, err := sqlitedb.New(cfg.SQLitePath, cairnCfg.SlotCount, int(cairnCfg.PhaseOffset().Seconds()))
 		if err != nil {
 			log.Fatal().Err(err).Msg("sqlite init failed")
 		}
@@ -141,10 +166,10 @@ func main() {
 	}
 
 	steamClient := auth.NewSteamClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
-	authHandler := auth.NewHandler(sdb, kv, steamClient, privKey)
-	playerHandler := player.NewHandler(sdb, kv)
+	authHandler := auth.NewHandler(sdb, kv, steamClient, privKey, cairnCfg)
+	playerHandler := player.NewHandler(sdb, kv, cairnCfg)
 
-	gachaHandler := gacha.NewHandler(sdb, kv, skinPool)
+	gachaHandler := gacha.NewHandler(sdb, kv, skinPool, gachaCfg, cairnCfg)
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
 

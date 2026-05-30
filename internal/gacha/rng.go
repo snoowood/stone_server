@@ -1,5 +1,7 @@
 package gacha
 
+import "time"
+
 type Rarity string
 
 const (
@@ -37,13 +39,17 @@ var rarityThresholds = []struct {
 
 // GameConfig holds server-side gacha parameters.
 // M3: refund 폐지로 RefundPts 필드 제거. 중복 보상은 inventories.count 증가로 대체.
+// PullCost / Cooldown 은 공통 game-config.xml 에서 주입된다(pkg/gameconfig).
 type GameConfig struct {
 	PullCost float64
+	Cooldown time.Duration
 }
 
-// DefaultConfig is the production gacha configuration.
+// DefaultConfig mirrors the historical hardcoded values. Used by tests; production
+// injects the XML-derived config via NewHandler.
 var DefaultConfig = GameConfig{
 	PullCost: 100,
+	Cooldown: 30 * time.Minute,
 }
 
 // Result holds a single gacha pull outcome.

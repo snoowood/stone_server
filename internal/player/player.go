@@ -15,12 +15,13 @@ import (
 )
 
 type Handler struct {
-	db store.DB
-	kv kvstore.KVStore
+	db       store.DB
+	kv       kvstore.KVStore
+	cairnCfg cairn.Config
 }
 
-func NewHandler(db store.DB, kv kvstore.KVStore) *Handler {
-	return &Handler{db: db, kv: kv}
+func NewHandler(db store.DB, kv kvstore.KVStore, cairnCfg cairn.Config) *Handler {
+	return &Handler{db: db, kv: kv, cairnCfg: cairnCfg}
 }
 
 type inventoryItem struct {
@@ -157,7 +158,7 @@ func (h *Handler) GetState(c *gin.Context) {
 	// M2: WishCairn 슬롯 상태 — 매 read 시 derive.
 	// 기존 player 가 M2 마이그레이션 이후 valid JWT 로 들어오는 경우 InitializeSlots 가
 	// 안 거쳐졌을 수 있다 (initPlayerState 는 /auth/* 진입점에서만 호출). lazy init 보강.
-	slots, err := cairn.LoadSlots(ctx, h.db, playerID, time.Now())
+	slots, err := h.cairnCfg.LoadSlots(ctx, h.db, playerID, time.Now())
 	if err != nil {
 		log.Error().Err(err).Msg("player state: load cairn slots")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
@@ -165,13 +166,13 @@ func (h *Handler) GetState(c *gin.Context) {
 	}
 	// partial init (1~4 슬롯만 있는 상태) 도 lazy 보강 — InitializeSlots 가 ON CONFLICT DO NOTHING
 	// 멱등이라 빠진 인덱스만 채워짐.
-	if len(slots) < cairn.SlotCount {
-		if err := cairn.InitializeSlots(ctx, h.db, playerID, time.Now()); err != nil {
+	if len(slots) < h.cairnCfg.SlotCount {
+		if err := h.cairnCfg.InitializeSlots(ctx, h.db, playerID, time.Now()); err != nil {
 			log.Error().Err(err).Msg("player state: lazy init cairn slots")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 			return
 		}
-		slots, err = cairn.LoadSlots(ctx, h.db, playerID, time.Now())
+		slots, err = h.cairnCfg.LoadSlots(ctx, h.db, playerID, time.Now())
 		if err != nil {
 			log.Error().Err(err).Msg("player state: reload cairn slots after lazy init")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
@@ -179,9 +180,9 @@ func (h *Handler) GetState(c *gin.Context) {
 		}
 	}
 	resp.Cairn = cairnStateResponse{
-		SlotCount:        cairn.SlotCount,
-		MaxLayers:        cairn.MaxLayers,
-		SpawnIntervalSec: cairn.SpawnIntervalSeconds,
+		SlotCount:        h.cairnCfg.SlotCount,
+		MaxLayers:        h.cairnCfg.MaxLayers,
+		SpawnIntervalSec: h.cairnCfg.SpawnIntervalSeconds,
 		Slots:            slots,
 	}
 
