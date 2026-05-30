@@ -41,6 +41,28 @@ func main() {
 
 	logger.Init(cfg.AppEnv)
 
+	// SkinPool 은 DB 초기화/마이그레이션보다 먼저 검증한다. 잘못된 CSV 로
+	// 부팅 시 PurgeLegacyItemIDs(destructive)가 실행돼 데이터가 사라지는 것을
+	// 방지하기 위함.
+	skinPool, err := gacha.LoadSkinPool(cfg.SkinsCSVPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", cfg.SkinsCSVPath).Msg("skin pool load failed")
+	}
+	// 스킵 행이 단 하나라도 있으면 무음 데이터 누락으로 라이브 드롭률이 바뀐다.
+	// 부팅 단계에서 거부해 운영 풀이 잘못 로드되는 것을 차단.
+	skinStats := skinPool.Stats()
+	if skinStats.SkippedBadRarity+skinStats.SkippedBadPart+skinStats.SkippedMalformed > 0 {
+		log.Fatal().
+			Str("path", cfg.SkinsCSVPath).
+			Int("bad_rarity", skinStats.SkippedBadRarity).
+			Int("bad_part", skinStats.SkippedBadPart).
+			Int("malformed", skinStats.SkippedMalformed).
+			Int("loaded", skinStats.Loaded).
+			Int("total", skinStats.Total).
+			Msg("skin pool had skipped rows — refusing to start (silently truncated pool would change drop odds)")
+	}
+	log.Info().Int("loaded", skinStats.Loaded).Msg("skin pool ready")
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -113,6 +135,13 @@ func main() {
 		log.Info().Msg("redis client ready")
 	}
 
+	// Legacy 더미 풀(common_stone_01 등) 잔여 행 정리. SkinPool 검증을 통과한
+	// 뒤에만 수행하므로 잘못된 CSV 로 부팅 시 데이터 손실 없음. 멱등.
+	// PG / SQLite 모드 모두 동작(SQLite 모드는 migrations/ 미경유).
+	if err := gacha.PurgeLegacyItemIDs(ctx, sdb); err != nil {
+		log.Fatal().Err(err).Msg("purge legacy gacha item_ids failed")
+	}
+
 	privKey, err := auth.ParsePrivateKey(cfg.JWTPrivKey)
 	if err != nil {
 		log.Fatal().Err(err).Msg("parse jwt private key failed")
@@ -122,24 +151,6 @@ func main() {
 	authHandler := auth.NewHandler(sdb, kv, steamClient, privKey)
 	playerHandler := player.NewHandler(sdb, kv)
 
-	skinPool, err := gacha.LoadSkinPool(cfg.SkinsCSVPath)
-	if err != nil {
-		log.Fatal().Err(err).Str("path", cfg.SkinsCSVPath).Msg("skin pool load failed")
-	}
-	// 스킵 행이 단 하나라도 있으면 무음 데이터 누락으로 라이브 드롭률이 바뀐다.
-	// 부팅 단계에서 거부해 운영 풀이 잘못 로드되는 것을 차단.
-	skinStats := skinPool.Stats()
-	if skinStats.SkippedBadRarity+skinStats.SkippedBadPart+skinStats.SkippedMalformed > 0 {
-		log.Fatal().
-			Str("path", cfg.SkinsCSVPath).
-			Int("bad_rarity", skinStats.SkippedBadRarity).
-			Int("bad_part", skinStats.SkippedBadPart).
-			Int("malformed", skinStats.SkippedMalformed).
-			Int("loaded", skinStats.Loaded).
-			Int("total", skinStats.Total).
-			Msg("skin pool had skipped rows — refusing to start (silently truncated pool would change drop odds)")
-	}
-	log.Info().Int("loaded", skinStats.Loaded).Msg("skin pool ready")
 	gachaHandler := gacha.NewHandler(sdb, kv, skinPool)
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
