@@ -102,6 +102,13 @@ func parseSkinPool(r io.Reader) (*SkinPool, error) {
 			pool.stats.SkippedMalformed++
 			continue
 		}
+		// skinId 는 마스터 데이터 키. Unity 추출 시 정규화돼 항상 소문자여야 한다.
+		// 대소문자 변형은 중복 검출을 우회하고 Roll()이 그대로 DB에 쓰게 되므로
+		// 데이터 드리프트 신호로 보고 스킵(+카운트). main.go 가 부팅 단계 차단.
+		if skinID != strings.ToLower(skinID) {
+			pool.stats.SkippedMalformed++
+			continue
+		}
 		if !isGachaRarity(rarity) {
 			pool.stats.SkippedBadRarity++
 			continue

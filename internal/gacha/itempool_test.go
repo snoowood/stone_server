@@ -113,6 +113,27 @@ l,Accessory,Legendary
 	}
 }
 
+// TestParseSkinPool_RejectsNonLowercaseSkinId: skinId 는 마스터 데이터 키라
+// 항상 소문자여야 한다. 대소문자 변형은 중복 검출 우회/DB 드리프트 위험 →
+// 스킵 + SkippedMalformed 카운트(마스터 데이터 드리프트 시그널).
+func TestParseSkinPool_RejectsNonLowercaseSkinId(t *testing.T) {
+	const csv = `skinId,partType,rarity
+Standard_Poop,Top,Common
+a,Accessory,Common
+b,Accessory,Uncommon
+c,Accessory,Rare
+d,Accessory,Unique
+e,Accessory,Legendary
+`
+	p, err := parseSkinPool(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("parseSkinPool: %v", err)
+	}
+	if p.Stats().SkippedMalformed != 1 {
+		t.Errorf("SkippedMalformed = %d, want 1 (non-lowercase Standard_Poop)", p.Stats().SkippedMalformed)
+	}
+}
+
 // TestParseSkinPool_EmptyRarity_Error: 한 등급이라도 비면 에러.
 func TestParseSkinPool_EmptyRarity_Error(t *testing.T) {
 	const csv = `skinId,partType,rarity
