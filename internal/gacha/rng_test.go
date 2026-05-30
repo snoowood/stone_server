@@ -5,19 +5,21 @@ import (
 	"testing"
 )
 
-// TestDetermineRarity checks that each rarity is returned at the correct boundary.
+// TestDetermineRarity checks each rarity boundary for the 10000-scale table
+// (Common 8000 / Uncommon 9000 / Rare 9500 / Unique 9990 / Legendary 10000).
+// This deterministic check is the source of truth for drop-rate correctness.
 func TestDetermineRarity(t *testing.T) {
 	cases := []struct {
-		roll   uint32
-		want   Rarity
+		roll uint32
+		want Rarity
 	}{
 		{0, Common},
-		{5999, Common},
-		{6000, Uncommon},
+		{7999, Common},
+		{8000, Uncommon},
 		{8999, Uncommon},
 		{9000, Rare},
-		{9899, Rare},
-		{9900, Unique},
+		{9499, Rare},
+		{9500, Unique},
 		{9989, Unique},
 		{9990, Legendary},
 		{9999, Legendary},
@@ -30,10 +32,9 @@ func TestDetermineRarity(t *testing.T) {
 	}
 }
 
-// TestRoll_SeedHash verifies that the returned SeedHash is a valid 64-char hex string
-// (SHA-256 produces 32 bytes = 64 hex chars) and contains no raw seed bytes.
+// TestRoll_SeedHash verifies the SeedHash is a valid 64-char hex string.
 func TestRoll_SeedHash(t *testing.T) {
-	r, err := Roll()
+	r, err := newTestPool(t).Roll()
 	if err != nil {
 		t.Fatalf("Roll() error: %v", err)
 	}
@@ -45,33 +46,46 @@ func TestRoll_SeedHash(t *testing.T) {
 	}
 }
 
-// TestRoll_ItemBelongsToRarity verifies the returned ItemID is in the correct pool.
+// TestRoll_ItemBelongsToRarity verifies the returned ItemID belongs to the
+// rolled rarity's bucket in the pool.
 func TestRoll_ItemBelongsToRarity(t *testing.T) {
+	pool := newTestPool(t)
+
+	// rarity → set of valid skinIds (any partType).
+	idsByRarity := map[Rarity]map[string]struct{}{}
+	for _, byRarity := range pool.byPartRarity {
+		for rarity, ids := range byRarity {
+			if idsByRarity[rarity] == nil {
+				idsByRarity[rarity] = map[string]struct{}{}
+			}
+			for _, id := range ids {
+				idsByRarity[rarity][id] = struct{}{}
+			}
+		}
+	}
+
 	for i := 0; i < 200; i++ {
-		r, err := Roll()
+		r, err := pool.Roll()
 		if err != nil {
 			t.Fatalf("Roll() error: %v", err)
 		}
-		pool := itemPool[r.Rarity]
-		found := false
-		for _, id := range pool {
-			if id == r.ItemID {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if _, ok := idsByRarity[r.Rarity][r.ItemID]; !ok {
 			t.Errorf("ItemID %q not in pool for rarity %q", r.ItemID, r.Rarity)
 		}
 	}
 }
 
-// TestRollDistribution verifies 10 000 rolls land within ±2% of target probabilities.
+// TestRollDistribution checks the four common-ish tiers land near their targets.
+// Legendary (0.1%) is too rare for a meaningful absolute-tolerance check, so it
+// is only asserted to stay within a loose sanity band (exactness is covered by
+// the deterministic TestDetermineRarity above).
 func TestRollDistribution(t *testing.T) {
-	const n = 10_000
+	pool := newTestPool(t)
+	const n = 100_000
+
 	counts := map[Rarity]int{}
 	for i := 0; i < n; i++ {
-		r, err := Roll()
+		r, err := pool.Roll()
 		if err != nil {
 			t.Fatalf("Roll() error: %v", err)
 		}
@@ -79,18 +93,57 @@ func TestRollDistribution(t *testing.T) {
 	}
 
 	targets := map[Rarity]float64{
-		Common:    0.60,
-		Uncommon:  0.30,
-		Rare:      0.09,
-		Unique:    0.009,
-		Legendary: 0.001,
+		Common:   0.80,
+		Uncommon: 0.10,
+		Rare:     0.05,
+		Unique:   0.049,
 	}
-	const tolerance = 0.02
-
+	const tolerance = 0.01
 	for rarity, target := range targets {
 		got := float64(counts[rarity]) / n
 		if got < target-tolerance || got > target+tolerance {
 			t.Errorf("rarity %q: got %.4f, want %.4f ±%.2f", rarity, got, target, tolerance)
 		}
+	}
+
+	// Legendary target 0.001 → expect ~100 in 100k. Loose band to avoid flakiness.
+	leg := float64(counts[Legendary]) / n
+	if leg <= 0 || leg > 0.005 {
+		t.Errorf("legendary rate %.5f out of sanity band (0, 0.005]", leg)
+	}
+}
+
+// TestRoll_PartTypeUniform guards the core rarity→partType→skin algorithm.
+// newTestPool's Common tier has partTypes {accessory(3 skins), top(1 skin)}.
+// With partType chosen uniformly (1/2 each) then skin uniformly within it:
+//   P(c_top1) = 1/2,  P(c_acc1) = 1/2 * 1/3 = 1/6  →  c_top1 ≈ 3× c_acc1.
+// A degenerate "rarity-only uniform" pick (all 4 common skins equal) would give
+// a ratio of ~1, so this fails if partType selection is dropped/broken.
+func TestRoll_PartTypeUniform(t *testing.T) {
+	pool := newTestPool(t)
+	const n = 150_000
+
+	counts := map[string]int{}
+	for i := 0; i < n; i++ {
+		r, err := pool.Roll()
+		if err != nil {
+			t.Fatalf("Roll() error: %v", err)
+		}
+		counts[r.ItemID]++
+	}
+
+	for _, id := range []string{"c_acc1", "c_acc2", "c_acc3", "c_top1"} {
+		if counts[id] == 0 {
+			t.Errorf("common skin %q never rolled (unreachable)", id)
+		}
+	}
+
+	top, acc := counts["c_top1"], counts["c_acc1"]
+	if top == 0 || acc == 0 {
+		t.Fatalf("c_top1=%d c_acc1=%d, cannot compute ratio", top, acc)
+	}
+	ratio := float64(top) / float64(acc)
+	if ratio < 2.3 || ratio > 3.7 {
+		t.Errorf("c_top1/c_acc1 ratio = %.2f, want ~3 (partType-uniform); ~1 would mean partType selection is broken", ratio)
 	}
 }

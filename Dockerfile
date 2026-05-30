@@ -19,6 +19,8 @@ RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 
 COPY --from=builder /app/server .
+# 가챠 풀 마스터 데이터(런타임에 SKINS_CSV_PATH=Data/skins.csv 로 읽음).
+COPY --from=builder /app/Data ./Data
 
 USER app
 

@@ -198,7 +198,7 @@ func TestGetNextGachaAt_RedisCacheHit(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
 	kv.Set(ctx, "gacha:cooldown:p1", future.Format(time.RFC3339), 10*time.Minute)
 
-	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	got, err := h.getNextGachaAt(ctx, "p1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -215,7 +215,7 @@ func TestGetNextGachaAt_RedisMiss_DBFallback(t *testing.T) {
 	future := time.Now().Add(20 * time.Minute).UTC().Truncate(time.Second)
 	db := &mockDB{queryRowFns: []func() store.Row{func() store.Row { return rowTimePtrResult(&future) }}}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	got, err := h.getNextGachaAt(ctx, "p1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -235,7 +235,7 @@ func TestGetNextGachaAt_RedisMiss_DBNull(t *testing.T) {
 	ctx := context.Background()
 
 	db := &mockDB{queryRowFns: []func() store.Row{func() store.Row { return rowTimePtrResult(nil) }}}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 
 	got, err := h.getNextGachaAt(ctx, "p1")
 	if err != nil {
@@ -251,7 +251,7 @@ func TestGetNextGachaAt_RedisMiss_DBNull(t *testing.T) {
 // M4: 본문 누락 / slot_index null → 400 INVALID_REQUEST.
 func TestPull_MissingSlotIndex_BadRequest(t *testing.T) {
 	kv := kvstore.NewMemStore()
-	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -271,7 +271,7 @@ func TestPull_MissingSlotIndex_BadRequest(t *testing.T) {
 // M4: slot_index 가 범위 밖 → 400 INVALID_SLOT.
 func TestPull_OutOfRangeSlotIndex_BadRequest(t *testing.T) {
 	kv := kvstore.NewMemStore()
-	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 
 	w := callPullWithSlot(h, "p1", 99) // SlotCount=5 이라 99 는 out of range
 	if w.Code != http.StatusBadRequest {
@@ -296,7 +296,7 @@ func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
 		},
 	}
 	db := &mockDB{tx: tx}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 
 	w := callPull(h, "p1")
 	if w.Code != http.StatusForbidden {
@@ -323,7 +323,7 @@ func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
 		},
 	}
 	db := &mockDB{tx: tx}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 
 	w := callPull(h, "p1")
 	if w.Code != http.StatusNotFound {
@@ -344,7 +344,7 @@ func TestPull_CooldownActive(t *testing.T) {
 	future := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
 	kv.Set(ctx, "gacha:cooldown:p1", future.Format(time.RFC3339), 15*time.Minute)
 
-	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: &mockDB{}, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusTooManyRequests {
@@ -370,7 +370,7 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusConflict {
@@ -399,7 +399,7 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusInternalServerError {
@@ -430,7 +430,7 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusInternalServerError {
@@ -460,7 +460,7 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -507,7 +507,7 @@ func TestStatus_CooldownActive(t *testing.T) {
 
 	// KV hit → getNextGachaAt makes no DB call.
 	db := &mockDB{}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callStatus(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -529,7 +529,7 @@ func TestStatus_NoCooldown(t *testing.T) {
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(nil) }, // next_gacha_at (DB fallback)
 	}}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callStatus(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -554,7 +554,7 @@ func TestStatus_RedisMiss_DBFallbackCooldown(t *testing.T) {
 	db := &mockDB{queryRowFns: []func() store.Row{
 		func() store.Row { return rowTimePtrResult(&future) }, // next_gacha_at (DB fallback)
 	}}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callStatus(h, "p1")
 
 	if w.Code != http.StatusOK {
@@ -614,7 +614,7 @@ func TestLogs_DefaultParams(t *testing.T) {
 			}}, nil
 		},
 	}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callLogs(h, "p1", "")
 
 	if w.Code != http.StatusOK {
@@ -640,7 +640,7 @@ func TestLogs_EmptyResult(t *testing.T) {
 		},
 		queryFn: func() (store.Rows, error) { return &mockRows{}, nil },
 	}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callLogs(h, "p1", "")
 
 	if w.Code != http.StatusOK {
@@ -671,7 +671,7 @@ func TestLogs_PageAndLimit(t *testing.T) {
 			}}, nil
 		},
 	}
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callLogs(h, "p1", "page=2&limit=1")
 
 	if w.Code != http.StatusOK {
@@ -703,7 +703,7 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 	}
 	db := &mockDB{tx: tx}
 
-	h := &Handler{db: db, kv: kv, cfg: DefaultConfig}
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: newTestPool(t)}
 	w := callPull(h, "p1")
 
 	if w.Code != http.StatusOK {

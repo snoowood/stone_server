@@ -24,6 +24,8 @@ type Config struct {
 	TrustedProxies string // comma-separated CIDRs; empty = trust no proxies
 	// DiagIntervalSecs > 0 enables periodic pool-stat + memory logging (for load tests).
 	DiagIntervalSecs int
+	// SkinsCSVPath: gacha 풀 마스터 데이터 CSV 경로. 기본 Data/skins.csv (repo 루트 기준).
+	SkinsCSVPath string
 }
 
 func Load() (*Config, error) {
@@ -40,6 +42,7 @@ func Load() (*Config, error) {
 		AppEnv:           getEnvOrDefault("APP_ENV", "development"),
 		TrustedProxies:   os.Getenv("TRUSTED_PROXIES"),
 		DiagIntervalSecs: getEnvInt("DIAG_INTERVAL_SECS", 0),
+		SkinsCSVPath:     getEnvOrDefault("SKINS_CSV_PATH", "Data/skins.csv"),
 	}
 
 	if err := cfg.validate(); err != nil {
