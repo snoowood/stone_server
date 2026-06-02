@@ -75,7 +75,9 @@ func TestLoad_Errors(t *testing.T) {
 		{"missing maxLayers key", `<gameConfig version="1"><gacha><pullCost>100</pullCost><cooldownSeconds>1800</cooldownSeconds></gacha><cairn><slotCount>5</slotCount><spawnIntervalSeconds>30</spawnIntervalSeconds></cairn></gameConfig>`},
 		{"missing spawnInterval key", `<gameConfig version="1"><gacha><pullCost>100</pullCost><cooldownSeconds>1800</cooldownSeconds></gacha><cairn><slotCount>5</slotCount><maxLayers>5</maxLayers></cairn></gameConfig>`},
 		{"malformed xml", `<gameConfig version="1"><gacha>`},
-		// non-positive values
+		// non-finite / non-positive values
+		{"pullCost NaN", mk("NaN", "1800", "5", "5", "30")},
+		{"pullCost Inf", mk("Inf", "1800", "5", "5", "30")},
 		{"pullCost zero", mk("0", "1800", "5", "5", "30")},
 		{"pullCost negative", mk("-1", "1800", "5", "5", "30")},
 		{"cooldown zero", mk("100", "0", "5", "5", "30")},

@@ -9,6 +9,7 @@ package gameconfig
 import (
 	"encoding/xml"
 	"fmt"
+	"math"
 	"os"
 )
 
@@ -102,6 +103,11 @@ const (
 )
 
 func (c Config) validate() error {
+	// NaN/Inf slip past "<= 0" comparisons (ParseFloat accepts "NaN"/"Inf"), so
+	// reject non-finite first — keeps parity with the client loader.
+	if math.IsNaN(c.PullCost) || math.IsInf(c.PullCost, 0) {
+		return fmt.Errorf("pullCost must be finite, got %v", c.PullCost)
+	}
 	if c.PullCost <= 0 {
 		return fmt.Errorf("pullCost must be > 0, got %v", c.PullCost)
 	}

@@ -64,7 +64,7 @@
 - 모든 키(`version` 포함) 존재 필수. 하나라도 누락 시 부팅 실패.
 
 **값 범위 검증**
-- `pullCost > 0`
+- `pullCost` 는 finite (NaN/Inf 거부 — `<= 0` 비교를 통과하므로 별도 검사). 그 뒤 `pullCost > 0`
 - `cooldownSeconds > 0` (0 미허용 — 누락 검출 강화 겸. dev용 0 쿨다운은 본 스키마 범위 밖)
 - `cooldownSeconds % 60 == 0` (Codex P2 — 클라가 분으로 변환 시 절삭 방지)
 - `slotCount > 0`
