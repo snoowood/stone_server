@@ -36,6 +36,10 @@ type capturedResult struct{}
 
 func (capturedResult) RowsAffected() (int64, error) { return 1, nil }
 
+// TestDerive_BuildingProgression pins the slot layer formula. The client mirrors
+// these exact golden vectors in stone_project
+// Assets/Tests/EditMode/WishCairnSlotLayerComputationTests.cs (T3-S5 cross-validation) —
+// 이 벡터를 바꾸면 클라 테스트도 함께 갱신해야 한다.
 func TestDerive_BuildingProgression(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
