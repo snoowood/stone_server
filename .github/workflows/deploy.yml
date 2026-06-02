@@ -1,0 +1,31 @@
+name: Deploy stone server
+
+on:
+  workflow_run:
+    workflows:
+      - Build & push image
+    branches:
+      - main
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, oci, deploy]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Deploy stone server
+        env:
+          STONE_SERVER_ENV_SECRET_ID: ${{ secrets.STONE_SERVER_ENV_SECRET_ID }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: bash scripts/deploy-from-runner.sh
