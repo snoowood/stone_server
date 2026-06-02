@@ -6,7 +6,7 @@ services:
       - path: runtime.env
         required: true
     environment:
-      APP_ENV: production
+      APP_ENV: ${APP_ENV:-production}
       SERVER_PORT: 8080
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://stone-redis:6379
