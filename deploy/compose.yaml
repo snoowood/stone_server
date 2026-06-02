@@ -1,0 +1,63 @@
+services:
+  stone-server:
+    image: ghcr.io/snoowood/stone_server:latest
+    container_name: stone-server
+    env_file:
+      - path: runtime.env
+        required: true
+    environment:
+      APP_ENV: production
+      SERVER_PORT: 8080
+      DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
+      REDIS_URL: redis://stone-redis:6379
+    depends_on:
+      stone-postgres:
+        condition: service_healthy
+      stone-redis:
+        condition: service_healthy
+    networks:
+      - stone-server-internal
+      - snoowoo-public
+    restart: unless-stopped
+
+  stone-postgres:
+    image: postgres:15-alpine
+    container_name: stone-postgres
+    env_file:
+      - path: runtime.env
+        required: true
+    environment:
+      POSTGRES_DB: ${DB_NAME:-stone_server}
+      POSTGRES_USER: ${DB_USER:-stone}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - /opt/snoowoo/stone-server/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stone} -d ${DB_NAME:-stone_server}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stone-server-internal
+    restart: unless-stopped
+
+  stone-redis:
+    image: redis:7-alpine
+    container_name: stone-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - /opt/snoowoo/stone-server/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - stone-server-internal
+    restart: unless-stopped
+
+networks:
+  stone-server-internal:
+    driver: bridge
+  snoowoo-public:
+    external: true

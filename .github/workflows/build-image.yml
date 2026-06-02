@@ -66,3 +66,20 @@ jobs:
     with:
       image_tag: ${{ needs.build.outputs.version }}
     secrets: inherit
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, oci, deploy]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy stone server
+        env:
+          STONE_SERVER_ENV_SECRET_ID: ${{ secrets.STONE_SERVER_ENV_SECRET_ID }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: bash scripts/deploy-from-runner.sh
