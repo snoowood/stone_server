@@ -18,7 +18,9 @@
 | **동기화 사본** | `stone_server/Data/game-config.xml` |
 
 - 원본은 **`stone_project`** 뿐이다. `stone_server` 사본은 직접 수정하지 않는다.
-- 동기화: 자동 스크립트로 원본 → 사본 복사. CI에서 양쪽 내용(해시) 일치 검사, 불일치 시 fail (계획서 T3-S4, R2).
+- **동기화 (T3-S4, skins.csv 와 동일 패턴)**: `stone_project/scripts/sync-game-config-to-server.sh` 가 post-commit 훅에서 원본 → 사본 복사 + stone_server 에 `chore(data): sync game-config.xml ...` 자동 커밋. (훅은 비버전관리 로컬 설정 — `.git/hooks/post-commit` 에 등록.)
+- **CI 드리프트 검사 (R2)**: `stone_project/.github/workflows/game-config-sync-check.yml` 가 원본 변경 PR/푸시에서 public `stone_server` 를 체크아웃해 동일 스크립트의 `--check` 모드(CR 무시 내용 비교)로 일치 검증, 불일치 시 fail.
+- **서버 사본 유효성**: `pkg/gameconfig` 의 `TestLoad_CommittedFileIsValid` 가 커밋된 `Data/game-config.xml` 의 파싱·검증을 보장(skins 의 `TestRealSkinsCSV_NoSkips` 대응).
 - 클라이언트는 `Resources.Load<TextAsset>("game-config")`로, 서버는 `Data/game-config.xml`을 부팅 시 1회 로드 후 캐싱.
 
 ## 3. 루트 · 버전
