@@ -47,7 +47,9 @@ if [[ -z "$(env_value JWT_PRIVATE_KEY)" ]]; then
   echo "JWT_PRIVATE_KEY is required in the stone-server env secret." >&2
   exit 1
 fi
-if [[ -z "$(env_value STEAM_API_KEY)" || -z "$(env_value STEAM_APP_ID)" ]]; then
+app_env="$(env_value APP_ENV)"
+app_env="${app_env:-production}"
+if [[ "$app_env" == "production" && (-z "$(env_value STEAM_API_KEY)" || -z "$(env_value STEAM_APP_ID)") ]]; then
   echo "STEAM_API_KEY and STEAM_APP_ID are required in production." >&2
   exit 1
 fi
