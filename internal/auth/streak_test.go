@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/sqlitedb"
 	"github.com/gensdeis/stone-server/pkg/store"
 )
@@ -15,7 +16,7 @@ import (
 func newTestDB(t *testing.T) (store.DB, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "streak.db")
-	raw, err := sqlitedb.New(path)
+	raw, err := sqlitedb.New(path, cairn.Default.SlotCount, int(cairn.Default.PhaseOffset().Seconds()))
 	if err != nil {
 		t.Fatalf("sqlitedb.New: %v", err)
 	}
@@ -34,7 +35,7 @@ func seedPlayer(t *testing.T, db store.DB) string {
 	); err != nil {
 		t.Fatalf("seed players: %v", err)
 	}
-	if err := initPlayerState(ctx, db, playerID); err != nil {
+	if err := initPlayerState(ctx, db, cairn.Default, playerID); err != nil {
 		t.Fatalf("initPlayerState: %v", err)
 	}
 	return playerID

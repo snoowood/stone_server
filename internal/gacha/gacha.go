@@ -18,20 +18,18 @@ import (
 	"github.com/gensdeis/stone-server/pkg/store"
 )
 
-const (
-	cooldownTTL    = 30 * time.Minute
-	cooldownKeyFmt = "gacha:cooldown:%s"
-)
+const cooldownKeyFmt = "gacha:cooldown:%s"
 
 type Handler struct {
-	db   store.DB
-	kv   kvstore.KVStore
-	cfg  GameConfig
-	pool *SkinPool
+	db       store.DB
+	kv       kvstore.KVStore
+	cfg      GameConfig
+	cairnCfg cairn.Config
+	pool     *SkinPool
 }
 
-func NewHandler(db store.DB, kv kvstore.KVStore, pool *SkinPool) *Handler {
-	return &Handler{db: db, kv: kv, cfg: DefaultConfig, pool: pool}
+func NewHandler(db store.DB, kv kvstore.KVStore, pool *SkinPool, cfg GameConfig, cairnCfg cairn.Config) *Handler {
+	return &Handler{db: db, kv: kv, cfg: cfg, cairnCfg: cairnCfg, pool: pool}
 }
 
 type statusResponse struct {
@@ -99,7 +97,7 @@ func (h *Handler) Pull(c *gin.Context) {
 		return
 	}
 	slotIndex := *req.SlotIndex
-	if slotIndex < 0 || slotIndex >= cairn.SlotCount {
+	if slotIndex < 0 || slotIndex >= h.cairnCfg.SlotCount {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slot_index out of range", "code": "INVALID_SLOT"})
 		return
 	}
@@ -182,7 +180,7 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	// 0. WishCairn slot 검증 + reset 을 atomic CAS UPDATE 로. complete 조건 (started_at <=
 	//    now - MaxLayers × interval) 인 슬롯만 reset. 동시 두 요청이 같은 slot 을 claim
 	//    하려고 해도 한 쪽만 affected=1, 다른 쪽은 affected=0 → CAIRN_INCOMPLETE.
-	threshold := now.Add(-time.Duration(cairn.MaxLayers*cairn.SpawnIntervalSeconds) * time.Second)
+	threshold := now.Add(-time.Duration(h.cairnCfg.MaxLayers*h.cairnCfg.SpawnIntervalSeconds) * time.Second)
 	res, err := tx.Exec(ctx,
 		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ? AND started_at <= ?",
 		nowStr, nowStr, playerID, slotIndex, threshold.Format(time.RFC3339),
@@ -260,7 +258,7 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 
 	// 6. Set next_gacha_at. last_sync_at 은 step 2 의 atomic UPDATE 가 갱신함.
 	//    슬롯 reset 은 step 0 에서 atomic CAS 로 완료.
-	nextGachaAt := now.Add(cooldownTTL)
+	nextGachaAt := now.Add(h.cfg.Cooldown)
 	if _, err := tx.Exec(ctx,
 		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
 		nextGachaAt.Format(time.RFC3339), playerID,
@@ -377,5 +375,5 @@ func (h *Handler) Logs(c *gin.Context) {
 
 func (h *Handler) setCooldown(ctx context.Context, playerID string, nextAt time.Time) {
 	key := fmt.Sprintf(cooldownKeyFmt, playerID)
-	h.kv.Set(ctx, key, nextAt.Format(time.RFC3339), cooldownTTL)
+	h.kv.Set(ctx, key, nextAt.Format(time.RFC3339), h.cfg.Cooldown)
 }

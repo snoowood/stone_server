@@ -38,7 +38,7 @@ func (h *Handler) AuthDev(c *gin.Context) {
 		return
 	}
 
-	if err := initPlayerState(ctx, h.db, playerID); err != nil {
+	if err := initPlayerState(ctx, h.db, h.cairnCfg, playerID); err != nil {
 		log.Error().Err(err).Str("player_id", playerID).Msg("auth/dev: init player state")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return

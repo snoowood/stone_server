@@ -92,7 +92,9 @@ CREATE INDEX IF NOT EXISTS idx_ach_retry_next
 `
 
 // New opens (or creates) a SQLite database at path, enables WAL mode, and applies the schema.
-func New(path string) (*sql.DB, error) {
+// slotCount / phaseOffsetSeconds drive the WishCairn backfill (game-config.xml derived,
+// not hardcoded) — see backfillCairnSlots.
+func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -143,19 +145,60 @@ func New(path string) (*sql.DB, error) {
 	}
 
 	// M2 (migrations/000011): WishCairn 슬롯 backfill for reused DBs.
-	// SQLite 의 modernc parser 가 INSERT ... SELECT ... ON CONFLICT 폼을 거부 → INSERT OR IGNORE.
-	if _, err := db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO wish_cairn_slots (player_id, slot_index, started_at)
-		SELECT p.id, s.idx,
-		       strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || (s.idx * 30) || ' seconds')
-		FROM players p
-		CROSS JOIN (
-		    SELECT 0 AS idx UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
-		) s
-	`); err != nil {
+	// 슬롯 수/시차는 game-config.xml 에서 주입 (하드코딩 제거, T3-S3b).
+	if err := backfillCairnSlots(ctx, db, slotCount, phaseOffsetSeconds); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("backfill wish_cairn_slots: %w", err)
+		return nil, err
 	}
 
 	return db, nil
+}
+
+// backfillCairnSlots reconciles the WishCairn slot COUNT for existing players to
+// the config-derived dimensions:
+//   - INSERT OR IGNORE 로 0..slotCount-1 중 빠진 슬롯만 staggered started_at 으로 보강
+//     (신규 생성 슬롯 k 의 started_at = now - k × phaseOffsetSeconds).
+//   - slotCount 가 줄어든 경우 slot_index >= slotCount 인 잉여 row 를 DELETE (R5: DB 정리).
+//
+// slotCount 가 그대로면 둘 다 사실상 no-op 이라 매 부팅 idempotent.
+// SQLite 의 modernc parser 가 INSERT ... SELECT ... ON CONFLICT 폼을 거부 → INSERT OR IGNORE.
+//
+// 의도적 한계 (count-only reconcile): 이미 존재하는 row 의 started_at 은 재정렬하지
+// 않는다. spawnInterval/maxLayers 변경으로 phaseOffset 이 바뀌어도 기존 슬롯의 stagger 는
+// 유지된다 (started_at 재작성은 플레이어 진행도를 바꾸는 결정이라 자동화하지 않음). 기존
+// 플레이어까지 새 phase 로 맞추려면 별도 ops 마이그레이션이 필요하다. PostgreSQL 모드는
+// 이 함수를 타지 않으므로, PG 의 차원 축소/재정렬은 hand-written 마이그레이션으로 처리한다.
+func backfillCairnSlots(ctx context.Context, db *sql.DB, slotCount, phaseOffsetSeconds int) error {
+	if slotCount <= 0 {
+		return fmt.Errorf("backfill wish_cairn_slots: slotCount must be > 0, got %d", slotCount)
+	}
+
+	// Build "SELECT 0 AS idx UNION ALL SELECT 1 ... UNION ALL SELECT slotCount-1".
+	var b strings.Builder
+	for i := 0; i < slotCount; i++ {
+		if i == 0 {
+			b.WriteString("SELECT 0 AS idx")
+		} else {
+			fmt.Fprintf(&b, " UNION ALL SELECT %d", i)
+		}
+	}
+
+	insert := fmt.Sprintf(`
+		INSERT OR IGNORE INTO wish_cairn_slots (player_id, slot_index, started_at)
+		SELECT p.id, s.idx,
+		       strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', 'now', '-' || (s.idx * %d) || ' seconds')
+		FROM players p
+		CROSS JOIN (%s) s
+	`, phaseOffsetSeconds, b.String())
+	if _, err := db.ExecContext(ctx, insert); err != nil {
+		return fmt.Errorf("backfill wish_cairn_slots: %w", err)
+	}
+
+	// Shrink cleanup: drop slots beyond the configured count.
+	if _, err := db.ExecContext(ctx,
+		"DELETE FROM wish_cairn_slots WHERE slot_index >= ?", slotCount,
+	); err != nil {
+		return fmt.Errorf("prune wish_cairn_slots: %w", err)
+	}
+	return nil
 }

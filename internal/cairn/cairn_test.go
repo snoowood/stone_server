@@ -55,7 +55,7 @@ func TestDerive_BuildingProgression(t *testing.T) {
 	}
 	for _, c := range cases {
 		startedAt := now.Add(-c.elapsed)
-		got := Derive(0, startedAt, now)
+		got := Default.Derive(0, startedAt, now)
 		if got.LayerCount != c.wantLayer || got.Status != c.wantState {
 			t.Errorf("elapsed=%s want layer=%d state=%s, got layer=%d state=%s",
 				c.elapsed, c.wantLayer, c.wantState, got.LayerCount, got.Status)
@@ -66,7 +66,7 @@ func TestDerive_BuildingProgression(t *testing.T) {
 func TestDerive_NegativeElapsedClamped(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	future := now.Add(1 * time.Hour) // started_at in the future (clock skew)
-	got := Derive(0, future, now)
+	got := Default.Derive(0, future, now)
 	if got.LayerCount != 0 || got.Status != StatusBuilding {
 		t.Errorf("negative elapsed should clamp to layer=0 building, got %+v", got)
 	}
@@ -79,15 +79,15 @@ func TestInitializeSlots_EmitsStaggeredInserts(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	db := &captureDB{}
 
-	if err := InitializeSlots(context.Background(), db, "player-1", now); err != nil {
+	if err := Default.InitializeSlots(context.Background(), db, "player-1", now); err != nil {
 		t.Fatalf("InitializeSlots: %v", err)
 	}
 
-	if len(db.execCalls) != SlotCount {
-		t.Fatalf("want %d INSERT calls, got %d", SlotCount, len(db.execCalls))
+	if len(db.execCalls) != Default.SlotCount {
+		t.Fatalf("want %d INSERT calls, got %d", Default.SlotCount, len(db.execCalls))
 	}
 
-	phase := PhaseOffset()
+	phase := Default.PhaseOffset()
 	for i, call := range db.execCalls {
 		if len(call.args) < 3 {
 			t.Fatalf("call %d: want >= 3 args, got %d", i, len(call.args))
@@ -115,19 +115,19 @@ func TestInitializeSlots_EmitsStaggeredInserts(t *testing.T) {
 func TestPhaseOffset_MatchesIntendedCadence(t *testing.T) {
 	// PhaseOffset = interval × maxLayers / slotCount.
 	// 30 × 5 / 5 = 30s. With staggered start, completions land at 30/60/90/120/150s.
-	want := time.Duration(SpawnIntervalSeconds*MaxLayers/SlotCount) * time.Second
-	if PhaseOffset() != want {
-		t.Errorf("PhaseOffset=%s want %s", PhaseOffset(), want)
+	want := time.Duration(Default.SpawnIntervalSeconds*Default.MaxLayers/Default.SlotCount) * time.Second
+	if Default.PhaseOffset() != want {
+		t.Errorf("PhaseOffset=%s want %s", Default.PhaseOffset(), want)
 	}
 
 	// Verify the stagger schedule: slot k starts at now - k × phaseOffset,
 	// so its completion is at (MaxLayers × interval) - (k × phaseOffset).
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	phase := PhaseOffset()
-	for k := 0; k < SlotCount; k++ {
+	phase := Default.PhaseOffset()
+	for k := 0; k < Default.SlotCount; k++ {
 		startedAt := now.Add(-time.Duration(k) * phase)
-		completionAt := startedAt.Add(time.Duration(MaxLayers*SpawnIntervalSeconds) * time.Second)
-		expectedRemaining := time.Duration(MaxLayers*SpawnIntervalSeconds-k*int(phase.Seconds())) * time.Second
+		completionAt := startedAt.Add(time.Duration(Default.MaxLayers*Default.SpawnIntervalSeconds) * time.Second)
+		expectedRemaining := time.Duration(Default.MaxLayers*Default.SpawnIntervalSeconds-k*int(phase.Seconds())) * time.Second
 		actualRemaining := completionAt.Sub(now)
 		if actualRemaining != expectedRemaining {
 			t.Errorf("slot %d: completion %s after now (want %s)", k, actualRemaining, expectedRemaining)

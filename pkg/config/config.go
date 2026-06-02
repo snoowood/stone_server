@@ -26,6 +26,8 @@ type Config struct {
 	DiagIntervalSecs int
 	// SkinsCSVPath: gacha 풀 마스터 데이터 CSV 경로. 기본 Data/skins.csv (repo 루트 기준).
 	SkinsCSVPath string
+	// GameConfigXMLPath: 클라/서버 공통 밸런스 값 XML 경로. 기본 Data/game-config.xml.
+	GameConfigXMLPath string
 }
 
 func Load() (*Config, error) {
@@ -42,7 +44,8 @@ func Load() (*Config, error) {
 		AppEnv:           getEnvOrDefault("APP_ENV", "development"),
 		TrustedProxies:   os.Getenv("TRUSTED_PROXIES"),
 		DiagIntervalSecs: getEnvInt("DIAG_INTERVAL_SECS", 0),
-		SkinsCSVPath:     getEnvOrDefault("SKINS_CSV_PATH", "Data/skins.csv"),
+		SkinsCSVPath:      getEnvOrDefault("SKINS_CSV_PATH", "Data/skins.csv"),
+		GameConfigXMLPath: getEnvOrDefault("GAME_CONFIG_XML_PATH", "Data/game-config.xml"),
 	}
 
 	if err := cfg.validate(); err != nil {

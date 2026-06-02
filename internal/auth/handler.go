@@ -20,15 +20,16 @@ import (
 
 // Handler handles Steam authentication requests.
 type Handler struct {
-	db      store.DB
-	kv      kvstore.KVStore
-	steam   SteamClient
-	privKey *rsa.PrivateKey
+	db       store.DB
+	kv       kvstore.KVStore
+	steam    SteamClient
+	privKey  *rsa.PrivateKey
+	cairnCfg cairn.Config
 }
 
 // NewHandler creates a Handler with the given dependencies.
-func NewHandler(db store.DB, kv kvstore.KVStore, steam SteamClient, privKey *rsa.PrivateKey) *Handler {
-	return &Handler{db: db, kv: kv, steam: steam, privKey: privKey}
+func NewHandler(db store.DB, kv kvstore.KVStore, steam SteamClient, privKey *rsa.PrivateKey, cairnCfg cairn.Config) *Handler {
+	return &Handler{db: db, kv: kv, steam: steam, privKey: privKey, cairnCfg: cairnCfg}
 }
 
 type authRequest struct {
@@ -88,7 +89,7 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 		return
 	}
 
-	if err := initPlayerState(ctx, h.db, playerID); err != nil {
+	if err := initPlayerState(ctx, h.db, h.cairnCfg, playerID); err != nil {
 		log.Error().Err(err).Str("player_id", playerID).Msg("auth: init player state")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
@@ -151,14 +152,14 @@ func upsertPlayer(ctx context.Context, db store.DB, steamID string) (string, err
 	return playerID, err
 }
 
-func initPlayerState(ctx context.Context, db store.DB, playerID string) error {
+func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, playerID string) error {
 	const q = `INSERT INTO player_states (player_id) VALUES (?) ON CONFLICT (player_id) DO NOTHING`
 	if _, err := db.Exec(ctx, q, playerID); err != nil {
 		return err
 	}
 	// M2: 신규 플레이어용 WishCairn 슬롯도 같이 초기화 (phase_offset 으로 시차 부여).
 	// ON CONFLICT DO NOTHING 이라 재로그인 시에는 no-op.
-	return cairn.InitializeSlots(ctx, db, playerID, time.Now())
+	return cairnCfg.InitializeSlots(ctx, db, playerID, time.Now())
 }
 
 // updateLoginStreak applies daily-streak rules atomically based on UTC date:
