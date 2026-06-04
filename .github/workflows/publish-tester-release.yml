@@ -54,7 +54,7 @@ jobs:
           # 3. Check out (or create) the deploy branch as an orphan — no main history.
           if git ls-remote --exit-code --heads origin deploy >/dev/null 2>&1; then
             git fetch origin deploy
-            git checkout deploy
+            git checkout -B deploy origin/deploy
             git rm -rf . >/dev/null 2>&1 || true
             git clean -fdx
           else
