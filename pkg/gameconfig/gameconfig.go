@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 )
 
 // ExpectedVersion is the schema version this build was written against.
@@ -26,6 +27,18 @@ type Config struct {
 	SlotCount            int
 	MaxLayers            int
 	SpawnIntervalSeconds int
+	VowRequiredItemCount int
+	VowTiers             []VowTier
+}
+
+// VowTier is one validated entry of the Vow crafting N-power/success-rate table,
+// keyed by the reward rarity a successful Vow targets.
+type VowTier struct {
+	TargetRarity   string // lowercased: uncommon|rare|unique|legendary
+	MinNPower      float64
+	MaxNPower      float64
+	MinSuccessRate float64 // percent, 0..100
+	MaxSuccessRate float64 // percent, 0..100
 }
 
 // xmlConfig uses pointer fields so a missing key reads as nil (distinguishable
@@ -42,6 +55,20 @@ type xmlConfig struct {
 		MaxLayers            *int `xml:"maxLayers"`
 		SpawnIntervalSeconds *int `xml:"spawnIntervalSeconds"`
 	} `xml:"cairn"`
+	Vow struct {
+		RequiredItemCount *int `xml:"requiredItemCount"`
+		Tiers             struct {
+			Tier []xmlVowTier `xml:"tier"`
+		} `xml:"tiers"`
+	} `xml:"vow"`
+}
+
+type xmlVowTier struct {
+	TargetRarity   string   `xml:"targetRarity,attr"`
+	MinNPower      *float64 `xml:"minNPower"`
+	MaxNPower      *float64 `xml:"maxNPower"`
+	MinSuccessRate *float64 `xml:"minSuccessRate"`
+	MaxSuccessRate *float64 `xml:"maxSuccessRate"`
 }
 
 // Load reads, parses, and validates the config at path. fail-fast on any error.
@@ -75,8 +102,16 @@ func Load(path string) (Config, error) {
 	if x.Cairn.SpawnIntervalSeconds == nil {
 		missing = append(missing, "cairn.spawnIntervalSeconds")
 	}
+	if x.Vow.RequiredItemCount == nil {
+		missing = append(missing, "vow.requiredItemCount")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("gameconfig: %s: missing required keys: %v", path, missing)
+	}
+
+	tiers, err := buildVowTiers(x.Vow.Tiers.Tier)
+	if err != nil {
+		return Config{}, fmt.Errorf("gameconfig: %s: %w", path, err)
 	}
 
 	cfg := Config{
@@ -86,11 +121,87 @@ func Load(path string) (Config, error) {
 		SlotCount:            *x.Cairn.SlotCount,
 		MaxLayers:            *x.Cairn.MaxLayers,
 		SpawnIntervalSeconds: *x.Cairn.SpawnIntervalSeconds,
+		VowRequiredItemCount: *x.Vow.RequiredItemCount,
+		VowTiers:             tiers,
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, fmt.Errorf("gameconfig: %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// validVowRarities are the reward rarities a Vow may target (Common excluded —
+// mirrors the client loader's Uncommon..Legendary range). Keyed lowercase.
+var validVowRarities = map[string]bool{
+	"uncommon":  true,
+	"rare":      true,
+	"unique":    true,
+	"legendary": true,
+}
+
+// buildVowTiers parses and validates the <tier> entries, fail-fast on any problem
+// (server policy; the client loader falls back to defaults instead). Tiers are
+// returned in document order — the committed file authors them lowest→highest.
+func buildVowTiers(raw []xmlVowTier) ([]VowTier, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("vow.tiers must have at least one tier")
+	}
+	tiers := make([]VowTier, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, t := range raw {
+		rarity := strings.ToLower(strings.TrimSpace(t.TargetRarity))
+		if !validVowRarities[rarity] {
+			return nil, fmt.Errorf("vow tier targetRarity must be one of uncommon/rare/unique/legendary, got %q", t.TargetRarity)
+		}
+		if seen[rarity] {
+			return nil, fmt.Errorf("duplicate vow tier targetRarity: %q", rarity)
+		}
+		seen[rarity] = true
+
+		if t.MinNPower == nil || t.MaxNPower == nil || t.MinSuccessRate == nil || t.MaxSuccessRate == nil {
+			return nil, fmt.Errorf("vow tier %q missing required numeric keys", rarity)
+		}
+		tier := VowTier{
+			TargetRarity:   rarity,
+			MinNPower:      *t.MinNPower,
+			MaxNPower:      *t.MaxNPower,
+			MinSuccessRate: *t.MinSuccessRate,
+			MaxSuccessRate: *t.MaxSuccessRate,
+		}
+		if err := tier.validate(); err != nil {
+			return nil, err
+		}
+		tiers = append(tiers, tier)
+	}
+	return tiers, nil
+}
+
+func (t VowTier) validate() error {
+	// NaN/Inf slip past ordering comparisons, so reject non-finite first.
+	for _, v := range []struct {
+		name string
+		val  float64
+	}{
+		{"minNPower", t.MinNPower}, {"maxNPower", t.MaxNPower},
+		{"minSuccessRate", t.MinSuccessRate}, {"maxSuccessRate", t.MaxSuccessRate},
+	} {
+		if math.IsNaN(v.val) || math.IsInf(v.val, 0) {
+			return fmt.Errorf("vow tier %q %s must be finite, got %v", t.TargetRarity, v.name, v.val)
+		}
+	}
+	if t.MinNPower < 0 {
+		return fmt.Errorf("vow tier %q minNPower must be >= 0, got %v", t.TargetRarity, t.MinNPower)
+	}
+	if t.MaxNPower <= t.MinNPower {
+		return fmt.Errorf("vow tier %q maxNPower (%v) must be > minNPower (%v)", t.TargetRarity, t.MaxNPower, t.MinNPower)
+	}
+	if t.MinSuccessRate < 0 || t.MinSuccessRate > 100 || t.MaxSuccessRate < 0 || t.MaxSuccessRate > 100 {
+		return fmt.Errorf("vow tier %q success rates must be in 0..100, got min=%v max=%v", t.TargetRarity, t.MinSuccessRate, t.MaxSuccessRate)
+	}
+	if t.MaxSuccessRate < t.MinSuccessRate {
+		return fmt.Errorf("vow tier %q maxSuccessRate (%v) must be >= minSuccessRate (%v)", t.TargetRarity, t.MaxSuccessRate, t.MinSuccessRate)
+	}
+	return nil
 }
 
 // Upper bounds are operational guardrails against extreme values blowing up
@@ -144,6 +255,9 @@ func (c Config) validate() error {
 	}
 	if c.CooldownSeconds > maxCooldownSeconds {
 		return fmt.Errorf("cooldownSeconds must be <= %d, got %d", maxCooldownSeconds, c.CooldownSeconds)
+	}
+	if c.VowRequiredItemCount <= 0 {
+		return fmt.Errorf("vow.requiredItemCount must be > 0, got %d", c.VowRequiredItemCount)
 	}
 	return nil
 }

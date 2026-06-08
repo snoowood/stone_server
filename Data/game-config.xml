@@ -18,4 +18,34 @@
     <maxLayers>5</maxLayers>                         <!-- int, 완성 필요 레이어 -->
     <spawnIntervalSeconds>30</spawnIntervalSeconds>  <!-- int, 레이어 1단 생성 간격 -->
   </cairn>
+  <!-- 발원(Vow crafting) -->
+  <vow>
+    <requiredItemCount>7</requiredItemCount>
+    <tiers>
+      <tier targetRarity="Uncommon">
+        <minNPower>100</minNPower>
+        <maxNPower>28800</maxNPower>
+        <minSuccessRate>5</minSuccessRate>
+        <maxSuccessRate>100</maxSuccessRate>
+      </tier>
+      <tier targetRarity="Rare">
+        <minNPower>500</minNPower>
+        <maxNPower>201600</maxNPower>
+        <minSuccessRate>5</minSuccessRate>
+        <maxSuccessRate>90</maxSuccessRate>
+      </tier>
+      <tier targetRarity="Unique">
+        <minNPower>2500</minNPower>
+        <maxNPower>777600</maxNPower>
+        <minSuccessRate>5</minSuccessRate>
+        <maxSuccessRate>80</maxSuccessRate>
+      </tier>
+      <tier targetRarity="Legendary">
+        <minNPower>10000</minNPower>
+        <maxNPower>3110400</maxNPower>
+        <minSuccessRate>5</minSuccessRate>
+        <maxSuccessRate>70</maxSuccessRate>
+      </tier>
+    </tiers>
+  </vow>
 </gameConfig>
