@@ -48,6 +48,10 @@ type pullResponse struct {
 	LastSyncAt   time.Time `json:"last_sync_at"`
 	// M3: 가챠 후 해당 item_id 의 누적 보유 개수. 신규면 1, 중복이면 K+1.
 	NewCount int `json:"new_count"`
+	// DTO sync: grant provenance. SourceType 은 본 pull 의 출처(wish_cairn),
+	// Reward 는 클라 RewardGrantDto 와 1:1 인 공통 grant 결과.
+	SourceType string      `json:"source_type"`
+	Reward     RewardGrant `json:"reward"`
 }
 
 var (
@@ -237,20 +241,15 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, err
 	}
 
-	// 4. Inventory UPSERT — M3: 집계형 stack 모델.
-	//    중복이면 count += 1, 신규면 count = 1. RETURNING count 로 결과를 받아 응답에 포함.
-	//    is_duplicate 는 RETURNING 의 count 가 1 인지(=신규)/>1 인지(=중복) 로 판정.
-	var newCount int
-	err = tx.QueryRow(ctx, `
-		INSERT INTO inventories (id, player_id, item_id, rarity, count)
-		VALUES (?, ?, ?, ?, 1)
-		ON CONFLICT (player_id, item_id) DO UPDATE SET count = inventories.count + 1
-		RETURNING count
-	`, uuid.New().String(), playerID, result.ItemID, string(result.Rarity)).Scan(&newCount)
+	// 4. Inventory grant — 공용 GrantItem 빌더로 집계형 stack UPSERT.
+	//    item_type/source_type provenance 까지 기록하고 RewardGrant 를 받아 응답에 싣는다.
+	//    is_duplicate/new_count 는 grant 의 RETURNING count 로 판정.
+	grant, err := GrantItem(ctx, tx, playerID, result.ItemID, string(result.Rarity), ItemTypeStoneSkin, SourceWishCairn)
 	if err != nil {
 		return nil, err
 	}
-	isDuplicate := newCount > 1
+	newCount := grant.NewCount
+	isDuplicate := grant.IsDuplicate
 
 	// 5. (제거됨) refund 폐지 — M3 집계형은 중복 그 자체가 가치. RefundPoints 는
 	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
@@ -290,6 +289,8 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		BalanceAfter: newBalance,
 		LastSyncAt:   lastSyncAt,
 		NewCount:     newCount,
+		SourceType:   SourceWishCairn,
+		Reward:       grant,
 	}, nil
 }
 
