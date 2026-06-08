@@ -26,8 +26,10 @@ func NewHandler(db store.DB, kv kvstore.KVStore, cairnCfg cairn.Config) *Handler
 
 type inventoryItem struct {
 	ItemID     string    `json:"item_id"`
+	ItemType   string    `json:"item_type"`
 	Rarity     string    `json:"rarity"`
 	Count      int       `json:"count"`
+	SourceType string    `json:"source_type"`
 	AcquiredAt time.Time `json:"acquired_at"`
 }
 
@@ -127,7 +129,7 @@ func (h *Handler) GetState(c *gin.Context) {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT item_id, rarity, count, acquired_at
+		SELECT item_id, rarity, count, acquired_at, item_type, source_type
 		FROM inventories
 		WHERE player_id = ?
 		ORDER BY acquired_at
@@ -142,7 +144,7 @@ func (h *Handler) GetState(c *gin.Context) {
 	resp.Inventory = []inventoryItem{}
 	for rows.Next() {
 		var item inventoryItem
-		if err := rows.Scan(&item.ItemID, &item.Rarity, &item.Count, store.ScanTime(&item.AcquiredAt)); err != nil {
+		if err := rows.Scan(&item.ItemID, &item.Rarity, &item.Count, store.ScanTime(&item.AcquiredAt), &item.ItemType, &item.SourceType); err != nil {
 			log.Error().Err(err).Msg("player state: scan inventory row")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 			return

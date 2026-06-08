@@ -139,3 +139,35 @@ func TestGetState_ReturnsEnlightenmentRate(t *testing.T) {
 		t.Errorf("want enlightenment_rate %.2f, got %.2f", rate, resp.EnlightenmentRate)
 	}
 }
+
+// DTO sync: 인벤토리 행의 item_type/source_type provenance 가 /player/state 응답에
+// 1:1 로 노출되어 클라 InventoryItemDto(ResolveItemType/ParseSourceType) 가 권위값을 받는다.
+func TestGetState_InventoryExposesGrantMeta(t *testing.T) {
+	h, db := newTestHandler(t)
+	seedPlayerState(t, db, "p1", 10.0, 1.0, time.Now())
+	ctx := context.Background()
+	if _, err := db.Exec(ctx,
+		`INSERT INTO inventories (id, player_id, item_id, rarity, count, item_type, source_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"inv1", "p1", "skin_001", "rare", 2, "wish_cairn_skin", "vow_reward"); err != nil {
+		t.Fatalf("seed inventory: %v", err)
+	}
+
+	w, resp := callGetState(h, "p1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(resp.Inventory) != 1 {
+		t.Fatalf("want 1 inventory item, got %d", len(resp.Inventory))
+	}
+	it := resp.Inventory[0]
+	if it.ItemType != "wish_cairn_skin" {
+		t.Errorf("want item_type wish_cairn_skin, got %q", it.ItemType)
+	}
+	if it.SourceType != "vow_reward" {
+		t.Errorf("want source_type vow_reward, got %q", it.SourceType)
+	}
+	if it.Count != 2 {
+		t.Errorf("want count 2, got %d", it.Count)
+	}
+}

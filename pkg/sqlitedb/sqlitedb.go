@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS inventories (
     item_id     TEXT NOT NULL,
     rarity      TEXT NOT NULL,
     count       INTEGER NOT NULL DEFAULT 1,
+    item_type   TEXT NOT NULL DEFAULT 'stone_skin',
+    source_type TEXT NOT NULL DEFAULT 'unknown',
     acquired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE (player_id, item_id)
 );
@@ -141,6 +143,21 @@ func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			db.Close()
 			return nil, fmt.Errorf("add inventories.count: %w", err)
+		}
+	}
+
+	// DTO sync (migrations/000013): inventories.item_type / source_type on reused DBs.
+	// 신규 DB 는 위 CREATE TABLE 에 이미 포함 — "duplicate column" 에러만 swallow.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE inventories ADD COLUMN item_type TEXT NOT NULL DEFAULT 'stone_skin'"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add inventories.item_type: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE inventories ADD COLUMN source_type TEXT NOT NULL DEFAULT 'unknown'"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add inventories.source_type: %w", err)
 		}
 	}
 

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/store"
+	"github.com/gin-gonic/gin"
 )
 
 // mockRows implements store.Rows.
@@ -66,6 +66,18 @@ func rowIntResult(v int) store.Row {
 	return &mockRow{scanFn: func(dest ...any) error {
 		*(dest[0].(*int)) = v
 		return nil
+	}}
+}
+
+// rowGrantResult mocks the inventory UPSERT ... RETURNING count, acquired_at row
+// produced by GrantItem (dest[0]=*int count, dest[1]=store.ScanTime scanner).
+func rowGrantResult(count int, acquiredAt time.Time) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*int)) = count
+		if sc, ok := dest[1].(sql.Scanner); ok {
+			return sc.Scan(acquiredAt.UTC().Format(time.RFC3339))
+		}
+		return errors.New("rowGrantResult: dest[1] not sql.Scanner")
 	}}
 }
 
@@ -188,7 +200,6 @@ func callPullWithSlot(h *Handler, playerID string, slotIndex int) *httptest.Resp
 	h.Pull(c)
 	return w
 }
-
 
 // --- cooldown / getNextGachaAt tests ---
 
@@ -421,7 +432,7 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
 			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
-			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new)
+			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1, acquired_at (new)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1),       // CAS slot reset
@@ -451,7 +462,7 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct → 500-100
-			rowIntResult(1),                    // inventory UPSERT RETURNING count = 1 (new item)
+			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1 (new item)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset
@@ -485,6 +496,16 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 	}
 	if !strings.Contains(body, `"new_count":1`) {
 		t.Errorf("want new_count:1 in body: %s", body)
+	}
+	// DTO sync: pull 응답에 source_type 및 reward grant(item_type 포함) 포함.
+	if !strings.Contains(body, `"source_type":"wish_cairn"`) {
+		t.Errorf("want source_type:wish_cairn in body: %s", body)
+	}
+	if !strings.Contains(body, `"reward":{`) {
+		t.Errorf("want reward object in body: %s", body)
+	}
+	if !strings.Contains(body, `"item_type":"stone_skin"`) {
+		t.Errorf("want reward.item_type:stone_skin in body: %s", body)
 	}
 }
 
@@ -585,9 +606,9 @@ func callLogs(h *Handler, playerID, query string) *httptest.ResponseRecorder {
 
 func makeLogScanFn(itemID, rarity string, isDup bool, refund, cost float64, pulledAt time.Time) func(dest ...any) error {
 	return func(dest ...any) error {
-		*(dest[0].(*string))  = itemID
-		*(dest[1].(*string))  = rarity
-		*(dest[2].(*bool))    = isDup
+		*(dest[0].(*string)) = itemID
+		*(dest[1].(*string)) = rarity
+		*(dest[2].(*bool)) = isDup
 		*(dest[3].(*float64)) = refund
 		*(dest[4].(*float64)) = cost
 		if sc, ok := dest[5].(sql.Scanner); ok {
@@ -694,7 +715,7 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct (refund 분기 없음)
-			rowIntResult(3),                    // inventory UPSERT RETURNING count = 3 (2 → 3, duplicate)
+			rowGrantResult(3, time.Now()),      // inventory UPSERT RETURNING count=3 (2 → 3, duplicate)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // CAS slot reset
@@ -722,5 +743,9 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 	}
 	if !strings.Contains(body, `"balance_after":400`) {
 		t.Errorf("want balance_after:400 (no refund applied): %s", body)
+	}
+	// DTO sync: 중복 grant 도 reward.is_duplicate=true 로 내려간다.
+	if !strings.Contains(body, `"reward":{`) || !strings.Contains(body, `"is_duplicate":true`) {
+		t.Errorf("want reward grant with is_duplicate:true: %s", body)
 	}
 }
