@@ -34,7 +34,9 @@ type SkinPool struct {
 	partsByRarity map[Rarity][]string
 	// partType → rarity → skinId 목록.
 	byPartRarity map[string]map[Rarity][]string
-	stats        LoadStats
+	// skinId → rarity (O(1) 조회 — vow 재료 검증 / 보상 타이핑용).
+	skinRarity map[string]Rarity
+	stats      LoadStats
 }
 
 // Stats 는 로드 시점에 집계한 파싱 통계를 반환한다.
@@ -76,6 +78,7 @@ func parseSkinPool(r io.Reader) (*SkinPool, error) {
 	pool := &SkinPool{
 		partsByRarity: map[Rarity][]string{},
 		byPartRarity:  map[string]map[Rarity][]string{},
+		skinRarity:    map[string]Rarity{},
 	}
 	seen := map[string]struct{}{}
 
@@ -126,6 +129,7 @@ func parseSkinPool(r io.Reader) (*SkinPool, error) {
 			pool.byPartRarity[partType] = map[Rarity][]string{}
 		}
 		pool.byPartRarity[partType][rarity] = append(pool.byPartRarity[partType][rarity], skinID)
+		pool.skinRarity[skinID] = rarity
 		pool.stats.Loaded++
 	}
 
@@ -147,6 +151,34 @@ func parseSkinPool(r io.Reader) (*SkinPool, error) {
 	}
 
 	return pool, nil
+}
+
+// RarityOf 는 skinId 의 rarity 를 반환한다. 풀에 없으면 ok=false.
+// vow 핸들러가 제출된 재료가 실제 craftable 스킨인지/등급이 무엇인지 검증할 때 쓴다.
+func (p *SkinPool) RarityOf(skinID string) (Rarity, bool) {
+	r, ok := p.skinRarity[skinID]
+	return r, ok
+}
+
+// PickByRarity 는 주어진 rarity 의 스킨 1개를 균등 추첨한다(partType 균등 → 버킷 내 스킨 균등),
+// Roll 의 rarity 내부 선택과 동일한 방식. 해당 rarity 풀이 비면 ok=false.
+// vow 보상 스킨 선택에 쓴다.
+func (p *SkinPool) PickByRarity(rarity Rarity) (string, bool) {
+	parts := p.partsByRarity[rarity]
+	if len(parts) == 0 {
+		return "", false
+	}
+	seed := make([]byte, 8) // 4 partType, 4 skin
+	if _, err := rand.Read(seed); err != nil {
+		return "", false
+	}
+	partType := parts[binary.BigEndian.Uint32(seed[0:4])%uint32(len(parts))]
+	skins := p.byPartRarity[partType][rarity]
+	if len(skins) == 0 {
+		return "", false
+	}
+	skin := skins[binary.BigEndian.Uint32(seed[4:8])%uint32(len(skins))]
+	return skin, true
 }
 
 // Roll 은 한 번의 가챠 추첨을 수행한다:
