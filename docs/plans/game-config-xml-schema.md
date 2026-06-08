@@ -51,6 +51,18 @@
 
 **범위 제외(클라 전용)**: `pointsPerInput`, `wishCairnCollectCost`(표시용), `eventMinInterval`/`eventMaxInterval`, `maxTimeStones`(서버 DB 제약으로 이미 일치). Enlightenment `rate`는 서버 DB 컬럼이 권위이므로 1차 제외(계획서 R4).
 
+### 4.1 vow 그룹 (발원 / Vow crafting) — 추가됨
+
+| 그룹 | 엘리먼트 | 타입 | 단위 | 값 | 비고 |
+|---|---|---|---|---|---|
+| `vow` | `requiredItemCount` | int | 개 | `7` | Vow 1회에 필요한 skin 아이템 수 |
+| `vow` | `tiers/tier` | 반복 | — | 4개 | `targetRarity` 속성으로 보상 등급 지정 |
+| `tier` | `minNPower` / `maxNPower` | float | N power | 등급별 | 해당 등급이 받는 N power 범위 |
+| `tier` | `minSuccessRate` / `maxSuccessRate` | float | % (0..100) | 등급별 | min/max N power 지점의 성공률 |
+
+- `tier` 는 `targetRarity` ∈ {`Uncommon`,`Rare`,`Unique`,`Legendary`} (대소문자 무시, `Common` 제외). 중복 금지.
+- **현재 서버 소비처 없음**: 서버는 vow 도메인 로직이 아직 없으나, 공통 스키마 검증 패리티(클라 `GameConfigLoader.ApplyVowXmlOverrides` 와 동일 규칙)를 위해 `pkg/gameconfig` 가 파싱·검증한다. 키 추가는 additive 라 `version` 은 `1` 유지(클라 `ExpectedVersion` 도 1).
+
 ## 5. 엘리먼트 네이밍 규칙
 
 - **camelCase** 엘리먼트 이름. 양쪽 파서에서 명시적 매핑(Go struct tag / C# XmlElement)으로 바인딩.
@@ -81,6 +93,14 @@
 - `slotCount <= 50`, `maxLayers <= 100`, `spawnIntervalSeconds <= 86400`(1일), `cooldownSeconds <= 604800`(1주)
 - 이유: `slotCount`/`maxLayers` 과대값은 `InitializeSlots` 반복·`/player/state` 응답 크기를 비정상적으로 키운다 ([cairn.go:74](../../internal/cairn/cairn.go), [player.go:181](../../internal/player/player.go)). 상한은 운영 가드레일(필요 시 조정).
 
+**vow 검증 (서버 fail-fast, 클라는 폴백 — 규칙 동일)**
+- `requiredItemCount` 존재 필수 + `> 0`
+- `tiers` 에 `tier` 1개 이상
+- 각 `tier`: `targetRarity` ∈ {Uncommon,Rare,Unique,Legendary}(Common 제외), 중복 금지
+- `minNPower`/`maxNPower`/`minSuccessRate`/`maxSuccessRate` 모두 존재 + finite(NaN/Inf 거부)
+- `minNPower >= 0`, `maxNPower > minNPower`
+- `minSuccessRate`/`maxSuccessRate` ∈ 0..100, `maxSuccessRate >= minSuccessRate`
+
 ## 7. 파서 매핑 예시
 
 ### 서버 (Go, `encoding/xml`)
@@ -101,6 +121,18 @@ type gameConfigXML struct {
         MaxLayers            *int `xml:"maxLayers"`
         SpawnIntervalSeconds *int `xml:"spawnIntervalSeconds"`
     } `xml:"cairn"`
+    Vow struct {
+        RequiredItemCount *int `xml:"requiredItemCount"`
+        Tiers struct {
+            Tier []struct {
+                TargetRarity   string   `xml:"targetRarity,attr"`
+                MinNPower      *float64 `xml:"minNPower"`
+                MaxNPower      *float64 `xml:"maxNPower"`
+                MinSuccessRate *float64 `xml:"minSuccessRate"`
+                MaxSuccessRate *float64 `xml:"maxSuccessRate"`
+            } `xml:"tier"`
+        } `xml:"tiers"`
+    } `xml:"vow"`
 }
 
 // 2) 캐시용 (검증 통과 후 확정값)
