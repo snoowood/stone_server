@@ -24,10 +24,11 @@ import (
 	"github.com/gensdeis/stone-server/internal/middleware"
 	"github.com/gensdeis/stone-server/internal/player"
 	"github.com/gensdeis/stone-server/internal/timeguard"
+	"github.com/gensdeis/stone-server/internal/vow"
 	"github.com/gensdeis/stone-server/pkg/cache"
 	"github.com/gensdeis/stone-server/pkg/config"
-	"github.com/gensdeis/stone-server/pkg/gameconfig"
 	"github.com/gensdeis/stone-server/pkg/db"
+	"github.com/gensdeis/stone-server/pkg/gameconfig"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
 	"github.com/gensdeis/stone-server/pkg/logger"
 	"github.com/gensdeis/stone-server/pkg/sqlitedb"
@@ -170,6 +171,7 @@ func main() {
 	playerHandler := player.NewHandler(sdb, kv, cairnCfg)
 
 	gachaHandler := gacha.NewHandler(sdb, kv, skinPool, gachaCfg, cairnCfg)
+	vowHandler := vow.NewHandler(sdb, skinPool, gameCfg.VowRequiredItemCount, gameCfg.VowTiers, cfg.AppEnv != "production")
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
 
@@ -213,6 +215,7 @@ func main() {
 	secured.POST("/gacha/pull", gachaHandler.Pull)
 	secured.GET("/gacha/status", gachaHandler.Status)
 	secured.GET("/gacha/logs", gachaHandler.Logs)
+	secured.POST("/vow/pray", vowHandler.Pray)
 	secured.POST("/achievement/unlock", achievementHandler.Unlock)
 	secured.GET("/achievement/list", achievementHandler.List)
 
