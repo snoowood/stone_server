@@ -229,6 +229,7 @@
 
 - **인증 헤더**: `Authorization: Bearer <jwt>` (JWT 엔드포인트). 만료 시 401 → 클라가 `/auth/refresh` 로 재발급(`ApiClient` 인터셉터 1회 자동 재시도).
 - **에러 바디**: 대부분 `{"error","code"}` (클라는 `(HttpStatus, Code)` 조합으로 분기). 예외: dev 전용 `/internal/dev-token` 은 `error` 만.
+- **Rate limit**: 한도 초과 시 `429` + `{"error","code":"RATE_LIMIT_EXCEEDED"}`. 정책(`internal/middleware/ratelimit.go`): `/auth/steam` 10/분(IP기반), `/gacha/pull` 5/분, `/player/sync` 4/분, `/achievement/unlock` 20/분, 그 외 60/분(player_id 또는 IP 기준). KV 장애 시 fail-open(통과). ⚠️ 클라 `ErrorPresenter` CodeMap 이 `RATE_LIMIT_EXCEEDED` 를 매핑해야 함 — 현재 미등록이라 실제 429 가 'unknown error' 토스트로 떨어짐. 매핑된 `RATE_EXCEEDED`/`TOO_FREQUENT`/`DUPLICATE_BATCH` 는 서버에 없는 dead code.
 - **시간 동기화**: 클라는 부팅 시 `/time/sync` 로 `ServerClock` 보정. 권위 시각(`last_sync_at`, `started_at`)은 서버 stamp 기준 외삽 → OS 시계 조작 무관.
 - **오프라인 큐**: mutation 요청은 네트워크 오류 시 `OfflineQueue` 적재 후 재연결 시 재송출. 단 **`/gacha/pull` 은 의도적 제외**(실행 시점이 의미 있어 큐잉 위험).
 - **rate(N Power) 전파**: `enlightenment_rate` 는 `/player/state` 단일 경로(부팅). 세션 중 변경 미반영(갭 G2). 양측 외삽은 `elapsed<0→0` 클램프.

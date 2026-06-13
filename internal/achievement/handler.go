@@ -30,7 +30,7 @@ var allAchievements = []string{
 type achievementItem struct {
 	AchievementID string     `json:"achievement_id"`
 	Unlocked      bool       `json:"unlocked"`
-	UnlockedAt    *time.Time `json:"unlocked_at"`
+	UnlockedAt    *time.Time `json:"unlocked_at,omitempty"`
 	SteamSynced   bool       `json:"steam_synced"`
 }
 
