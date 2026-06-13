@@ -304,6 +304,7 @@ func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
 			rowTimeStrResult(time.Now().UTC()), // LoadSlotStartedAt: slot 존재, 최근 시작 (incomplete)
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(0), // CAS slot reset: affected=0 (incomplete 라 조건 미달)
 		},
 	}
@@ -331,6 +332,7 @@ func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
 			rowErrResult(sql.ErrNoRows), // LoadSlotStartedAt: 슬롯 자체가 없음
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(0), // CAS slot reset: affected=0 (slot 자체 없음)
 		},
 	}
@@ -377,6 +379,7 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 			rowErrNoRows(), // atomic accrue+deduct returns no rows → InsufficientPoints
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(1), // CAS slot reset (complete)
 		},
 	}
@@ -396,6 +399,36 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 	}
 }
 
+// H4: 트랜잭션 내부 쿨다운 게이트(step 0a)가 affected=0 이면 동시 pull 경합으로 판정.
+// pre-tx 검사를 통과했더라도(KV/DB에 쿨다운 미기록) 게이트에서 거절되어 429 COOLDOWN_ACTIVE +
+// 롤백(슬롯/포인트 미소모). 서로 다른 complete 슬롯에 대한 멀티슬롯 동시 pull 우회를 차단.
+func TestExecPull_CooldownGate_Race(t *testing.T) {
+	kv := kvstore.NewMemStore()
+
+	tx := &mockTx{
+		execQueue: []func() (store.Result, error){
+			okExec(0), // 0a 쿨다운 게이트: affected=0 (이미 다른 동시 pull 이 next_gacha_at 을 claim)
+		},
+	}
+	db := &mockDB{tx: tx}
+
+	h := &Handler{db: db, kv: kv, cfg: DefaultConfig, cairnCfg: cairn.Default, pool: newTestPool(t)}
+	w := callPull(h, "p1")
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "COOLDOWN_ACTIVE") {
+		t.Fatalf("want COOLDOWN_ACTIVE: %s", w.Body.String())
+	}
+	if !tx.RolledBack {
+		t.Error("transaction should have been rolled back (slot/points must not be consumed)")
+	}
+	if tx.Committed {
+		t.Error("transaction must not be committed when cooldown gate rejects")
+	}
+}
+
 func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
@@ -406,6 +439,7 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 			rowErrResult(dbErr),                // inventory UPSERT RETURNING — fails → rollback
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(1), // CAS slot reset
 		},
 	}
@@ -435,8 +469,8 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1, acquired_at (new)
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1),       // 0a 쿨다운 게이트 통과
 			okExec(1),       // CAS slot reset
-			okExec(1),       // next_gacha_at UPDATE
 			failExec(dbErr), // gacha_logs INSERT — fails
 		},
 	}
@@ -465,8 +499,8 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1 (new item)
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(1), // CAS slot reset
-			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}
@@ -718,8 +752,8 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 			rowGrantResult(3, time.Now()),      // inventory UPSERT RETURNING count=3 (2 → 3, duplicate)
 		},
 		execQueue: []func() (store.Result, error){
+			okExec(1), // 0a 쿨다운 게이트 통과
 			okExec(1), // CAS slot reset
-			okExec(1), // next_gacha_at UPDATE
 			okExec(1), // gacha_logs
 		},
 	}

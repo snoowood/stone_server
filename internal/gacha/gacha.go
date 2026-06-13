@@ -58,6 +58,7 @@ var (
 	errInsufficientPoints = errors.New("insufficient points")
 	errCairnIncomplete    = errors.New("cairn slot not complete")
 	errCairnSlotNotFound  = errors.New("cairn slot not found")
+	errCooldownActive     = errors.New("gacha cooldown active")
 )
 
 // pullRequest mirrors the POST /api/v1/gacha/pull body.
@@ -124,6 +125,15 @@ func (h *Handler) Pull(c *gin.Context) {
 	res, err := h.execPull(ctx, playerID, slotIndex)
 	if err != nil {
 		switch {
+		case errors.Is(err, errCooldownActive):
+			// 트랜잭션 내부 쿨다운 게이트(step 0a)가 동시 pull 경합으로 거절. pre-tx 와 동일 형태로 응답.
+			nextAt, _ := h.getNextGachaAt(ctx, playerID)
+			body := gin.H{"error": "gacha cooldown active", "code": "COOLDOWN_ACTIVE"}
+			if nextAt != nil {
+				body["next_gacha_at"] = nextAt
+			}
+			c.JSON(http.StatusTooManyRequests, body)
+			return
 		case errors.Is(err, errInsufficientPoints):
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
 			return
@@ -180,6 +190,26 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 
 	now := time.Now().UTC().Truncate(time.Second)
 	nowStr := now.Format(time.RFC3339)
+	nextGachaAt := now.Add(h.cfg.Cooldown)
+
+	// 0a. 쿨다운 CAS 게이트 (트랜잭션 내부). next_gacha_at 을 now+cooldown 으로 claim 하되
+	//     아직 쿨다운이 끝난(또는 최초인) 경우에만 affected=1. pre-tx 검사(Pull 핸들러)는
+	//     fast-path 일 뿐, 서로 다른 complete 슬롯에 대한 동시 pull 이 pre-check 를 둘 다
+	//     통과한 뒤 이 게이트로 들어오면 먼저 커밋한 1건만 통과하고 나머지는 affected=0 →
+	//     errCooldownActive. 실패 시 defer tx.Rollback 으로 슬롯/포인트 소모도 함께 롤백된다.
+	gateRes, err := tx.Exec(ctx,
+		`UPDATE player_states
+		   SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		 WHERE player_id = ?
+		   AND (next_gacha_at IS NULL OR next_gacha_at <= ?)`,
+		nextGachaAt.Format(time.RFC3339), playerID, nowStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if affected, _ := gateRes.RowsAffected(); affected == 0 {
+		return nil, errCooldownActive
+	}
 
 	// 0. WishCairn slot 검증 + reset 을 atomic CAS UPDATE 로. complete 조건 (started_at <=
 	//    now - MaxLayers × interval) 인 슬롯만 reset. 동시 두 요청이 같은 slot 을 claim
@@ -255,15 +285,8 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	//    호환성 유지를 위해 응답 필드로 남기지만 항상 0.
 	refundPts := 0.0
 
-	// 6. Set next_gacha_at. last_sync_at 은 step 2 의 atomic UPDATE 가 갱신함.
-	//    슬롯 reset 은 step 0 에서 atomic CAS 로 완료.
-	nextGachaAt := now.Add(h.cfg.Cooldown)
-	if _, err := tx.Exec(ctx,
-		"UPDATE player_states SET next_gacha_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE player_id = ?",
-		nextGachaAt.Format(time.RFC3339), playerID,
-	); err != nil {
-		return nil, err
-	}
+	// 6. next_gacha_at 은 step 0a 의 쿨다운 CAS 게이트가 이미 now+cooldown 으로 설정함
+	//    (last_sync_at 은 step 2, 슬롯 reset 은 step 0 에서 atomic 처리). 별도 UPDATE 불필요.
 
 	// 7. Append gacha log
 	if _, err := tx.Exec(ctx,
