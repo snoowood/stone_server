@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# deploy.sh — Stone Server production deployment on AWS Lightsail (Ubuntu 22.04)
+# deploy.sh — [DEPRECATED] Stone Server manual production deploy on AWS Lightsail.
+#   ⚠️ 운영 배포는 GitHub Actions OCI 자동배포로 대체됨
+#      (.github/workflows/deploy.yml → scripts/deploy-from-runner.sh → deploy/compose.yaml).
+#      이 스크립트는 레거시 수동 경로다. 부득이 사용 시 .env 의 APP_ENV=production 이어야 하며,
+#      아래 가드가 그 외(development/누락)면 부팅 전에 거부한다(dev-in-prod 차단).
 #
 # Usage:
 #   1. SSH into the Lightsail instance
@@ -40,6 +44,16 @@ if [[ ! -f .env ]]; then
 fi
 if git ls-files --error-unmatch .env &>/dev/null 2>&1; then
   echo "ERROR: .env is tracked by git. Remove it with: git rm --cached .env"
+  exit 1
+fi
+
+# ── 2b. Fail-closed: 이건 production 스크립트다. .env 가 production 이 아니면 거부. ────
+# .env.example 은 APP_ENV=development 를 ship 하므로, 운영자가 복사 후 APP_ENV 를 안 바꾸면
+# dev 엔드포인트(/auth/dev, /internal/dev-token)·mock Steam 이 운영에 노출된다. 이를 차단.
+app_env="$(grep -E '^APP_ENV=' .env | tail -n1 | cut -d= -f2- || true)"
+if [[ "$app_env" != "production" ]]; then
+  echo "ERROR: deploy.sh 는 production 전용인데 .env 의 APP_ENV='${app_env:-<unset>}' 입니다." >&2
+  echo "       .env 에 APP_ENV=production 을 설정하거나, OCI 자동배포(활성 경로)를 사용하세요." >&2
   exit 1
 fi
 

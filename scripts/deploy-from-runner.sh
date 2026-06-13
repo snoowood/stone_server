@@ -47,8 +47,11 @@ if [[ -z "$(env_value JWT_PRIVATE_KEY)" ]]; then
   echo "JWT_PRIVATE_KEY is required in the stone-server env secret." >&2
   exit 1
 fi
+# APP_ENV 미설정 시 development 기본 — deploy/compose.yaml 의 ${APP_ENV:-development} 및
+# 현 단계 main=dev 와 일치. production 배포는 시크릿에 APP_ENV=production 을 명시해야
+# 이 Steam 키 프리플라이트가 발동한다.
 app_env="$(env_value APP_ENV)"
-app_env="${app_env:-production}"
+app_env="${app_env:-development}"
 if [[ "$app_env" == "production" && (-z "$(env_value STEAM_API_KEY)" || -z "$(env_value STEAM_APP_ID)") ]]; then
   echo "STEAM_API_KEY and STEAM_APP_ID are required in production." >&2
   exit 1

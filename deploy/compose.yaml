@@ -1,12 +1,15 @@
 services:
   stone-server:
-    image: ghcr.io/snoowood/stone_server:latest
+    image: ${APP_IMAGE:-ghcr.io/snoowood/stone_server:latest}
     container_name: stone-server
     env_file:
       - path: runtime.env
         required: true
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      # APP_ENV 는 runtime.env 시크릿이 단일 소스. 미설정 시 development 기본(현 단계 main=dev).
+      # 시크릿에 APP_ENV=production 을 넣으면 production. (production 의 strict fail-closed 는
+      # Stage 2 에서 production 배포 경로에 별도 적용 예정.)
+      APP_ENV: ${APP_ENV:-development}
       SERVER_PORT: 8080
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://stone-redis:6379
