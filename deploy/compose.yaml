@@ -6,7 +6,10 @@ services:
       - path: runtime.env
         required: true
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      # main(=dev 환경) 자동배포: dev 엔드포인트·mock Steam 사용. environment 가
+      # env_file(runtime.env) 보다 우선해 시크릿 값과 무관하게 development 로 고정.
+      # 실제 production 배포는 production 브랜치(APP_ENV: production).
+      APP_ENV: development
       SERVER_PORT: 8080
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://stone-redis:6379
