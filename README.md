@@ -73,20 +73,22 @@ curl http://localhost:8080/api/v1/health
 
 `APP_ENV=development`이면 Steam mock 클라이언트가 활성화되고 `/api/v1/auth/dev`, `/api/v1/internal/dev-token` 엔드포인트가 노출된다.
 
-## Docker Compose 실행 (PostgreSQL + Redis 모드)
+## Docker Compose 실행 (로컬 PostgreSQL + Redis 모드)
+
+루트 `docker-compose.yml` 은 **로컬/개발용**이다. `APP_ENV` 는 `.env`(기본 `development`)가 결정하므로 dev 엔드포인트·mock Steam 이 활성화된다.
 
 ```bash
 cp .env.example .env
-# .env 파일에서 DB_PASSWORD, JWT_PRIVATE_KEY, STEAM_API_KEY 등 설정
+# .env 파일에서 DB_PASSWORD, JWT_PRIVATE_KEY 등 설정
 
 docker compose up -d
-```
-
-앱 로그 확인:
-
-```bash
 docker compose logs -f app
 ```
+
+> **운영(production) 배포**는 GitHub Actions OCI 자동배포가 담당한다
+> (`.github/workflows/deploy.yml` → `scripts/deploy-from-runner.sh` → `deploy/compose.yaml`,
+> `runtime.env` 시크릿의 `APP_ENV` 사용). 수동 `deploy.sh`(Lightsail)는 **레거시(deprecated)** 이며,
+> 부득이 사용 시 `.env` 의 `APP_ENV=production` 가드를 통과해야 한다.
 
 ## 환경변수
 
