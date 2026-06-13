@@ -47,8 +47,10 @@ if [[ -z "$(env_value JWT_PRIVATE_KEY)" ]]; then
   echo "JWT_PRIVATE_KEY is required in the stone-server env secret." >&2
   exit 1
 fi
-app_env="$(env_value APP_ENV)"
-app_env="${app_env:-production}"
+# compose.yaml 이 APP_ENV=production 으로 고정 배포하므로(런타임 컨테이너는 항상
+# production), Steam 키 프리플라이트도 항상 production 전제로 강제한다 —
+# runtime.env 의 APP_ENV 값과 무관하게 키 누락을 배포 전에 차단.
+app_env="production"
 if [[ "$app_env" == "production" && (-z "$(env_value STEAM_API_KEY)" || -z "$(env_value STEAM_APP_ID)") ]]; then
   echo "STEAM_API_KEY and STEAM_APP_ID are required in production." >&2
   exit 1

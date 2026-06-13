@@ -6,7 +6,12 @@ services:
       - path: runtime.env
         required: true
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      # Fail-closed: 항상 production. environment 가 env_file(runtime.env) 보다 우선한다.
+      # ⚠️ ${APP_ENV:-production} 로는 안 된다 — deploy-from-runner.sh 가
+      #    `docker compose --env-file runtime.env up` 으로 띄우고 --env-file 은 변수 보간
+      #    소스도 되므로, runtime.env 시크릿에 APP_ENV=development 가 있으면 default 를
+      #    가로채 운영이 dev 로 떠 /auth/dev·/internal/dev-token·mock Steam 이 노출된다.
+      APP_ENV: production
       SERVER_PORT: 8080
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://stone-redis:6379
