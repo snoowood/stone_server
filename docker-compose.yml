@@ -3,11 +3,14 @@ services:
     build: .
     env_file: .env
     environment:
-      # Fail-closed: Docker 배포는 기본 production. dev 로그인(/auth/dev)·임의 토큰
-      # 발급(/internal/dev-token)·mock Steam 은 APP_ENV != production 일 때만 노출되므로,
-      # .env 누락/오타로 development 로 떨어져 계정 탈취 경로가 열리는 것을 막는다.
-      # 의도적 staging/dev 컨테이너는 호스트에서 APP_ENV 를 명시 export 해 override.
-      APP_ENV: ${APP_ENV:-production}
+      # Fail-closed: 컨테이너는 항상 production. environment 는 env_file(.env) 보다
+      # 우선하므로 .env 의 APP_ENV(=development)를 덮어쓴다. dev 로그인(/auth/dev)·임의
+      # 토큰(/internal/dev-token)·mock Steam 은 APP_ENV != production 일 때만 노출되는데,
+      # 이를 운영에서 원천 차단한다.
+      # ⚠️ ${APP_ENV:-production} 로는 안 된다 — Compose 가 .env 를 보간 소스로 읽어
+      #    APP_ENV=development 가 default 를 가로채 development 로 샌다(:- 는 unset 일 때만).
+      # dev/staging 은 이 compose 를 쓰지 말 것 — 로컬 SQLite 모드 또는 별도 override compose.
+      APP_ENV: production
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://redis:6379
       # .env sets SQLITE_PATH for local (non-Docker) dev; clear it here so the
