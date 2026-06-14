@@ -11,7 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 
 	"github.com/gensdeis/stone-server/internal/cairn"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
@@ -74,7 +74,7 @@ func (h *Handler) Status(c *gin.Context) {
 
 	nextAt, err := h.getNextGachaAt(ctx, playerID)
 	if err != nil {
-		log.Error().Err(err).Msg("gacha status: cooldown check")
+		zerolog.Ctx(ctx).Error().Err(err).Msg("gacha status: cooldown check")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
@@ -109,11 +109,12 @@ func (h *Handler) Pull(c *gin.Context) {
 
 	nextAt, err := h.getNextGachaAt(ctx, playerID)
 	if err != nil {
-		log.Error().Err(err).Msg("gacha pull: cooldown check")
+		zerolog.Ctx(ctx).Error().Err(err).Msg("gacha pull: cooldown check")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
 	if nextAt != nil && time.Now().Before(*nextAt) {
+		zerolog.Ctx(ctx).Debug().Str("code", "COOLDOWN_ACTIVE").Msg("gacha pull rejected")
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":         "gacha cooldown active",
 			"code":          "COOLDOWN_ACTIVE",
@@ -124,9 +125,11 @@ func (h *Handler) Pull(c *gin.Context) {
 
 	res, err := h.execPull(ctx, playerID, slotIndex)
 	if err != nil {
+		lg := zerolog.Ctx(ctx)
 		switch {
 		case errors.Is(err, errCooldownActive):
 			// 트랜잭션 내부 쿨다운 게이트(step 0a)가 동시 pull 경합으로 거절. pre-tx 와 동일 형태로 응답.
+			lg.Debug().Str("code", "COOLDOWN_ACTIVE").Msg("gacha pull rejected (tx gate)")
 			nextAt, _ := h.getNextGachaAt(ctx, playerID)
 			body := gin.H{"error": "gacha cooldown active", "code": "COOLDOWN_ACTIVE"}
 			if nextAt != nil {
@@ -135,16 +138,19 @@ func (h *Handler) Pull(c *gin.Context) {
 			c.JSON(http.StatusTooManyRequests, body)
 			return
 		case errors.Is(err, errInsufficientPoints):
+			lg.Debug().Str("code", "INSUFFICIENT_POINTS").Msg("gacha pull rejected")
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
 			return
 		case errors.Is(err, errCairnIncomplete):
+			lg.Debug().Str("code", "CAIRN_INCOMPLETE").Msg("gacha pull rejected")
 			c.JSON(http.StatusForbidden, gin.H{"error": "cairn slot not complete", "code": "CAIRN_INCOMPLETE"})
 			return
 		case errors.Is(err, errCairnSlotNotFound):
+			lg.Debug().Str("code", "CAIRN_SLOT_NOT_FOUND").Msg("gacha pull rejected")
 			c.JSON(http.StatusNotFound, gin.H{"error": "cairn slot not found", "code": "CAIRN_SLOT_NOT_FOUND"})
 			return
 		}
-		log.Error().Err(err).Msg("gacha pull: transaction")
+		lg.Error().Err(err).Msg("gacha pull: transaction")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
@@ -355,7 +361,7 @@ func (h *Handler) Logs(c *gin.Context) {
 	if err := h.db.QueryRow(ctx,
 		"SELECT COUNT(*) FROM gacha_logs WHERE player_id = ?", playerID,
 	).Scan(&total); err != nil {
-		log.Error().Err(err).Msg("gacha logs: count")
+		zerolog.Ctx(ctx).Error().Err(err).Msg("gacha logs: count")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
@@ -369,7 +375,7 @@ func (h *Handler) Logs(c *gin.Context) {
 		playerID, limit, offset,
 	)
 	if err != nil {
-		log.Error().Err(err).Msg("gacha logs: query")
+		zerolog.Ctx(ctx).Error().Err(err).Msg("gacha logs: query")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
@@ -382,14 +388,14 @@ func (h *Handler) Logs(c *gin.Context) {
 			&e.ItemID, &e.Rarity, &e.IsDuplicate,
 			&e.RefundPoints, &e.CostPoints, store.ScanTime(&e.PulledAt),
 		); err != nil {
-			log.Error().Err(err).Msg("gacha logs: scan")
+			zerolog.Ctx(ctx).Error().Err(err).Msg("gacha logs: scan")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 			return
 		}
 		logs = append(logs, e)
 	}
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("gacha logs: iterate")
+		zerolog.Ctx(ctx).Error().Err(err).Msg("gacha logs: iterate")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}

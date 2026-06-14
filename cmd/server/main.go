@@ -42,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Init(cfg.AppEnv)
+	logger.Init(cfg.AppEnv, cfg.LogLevel)
 
 	// SkinPool 은 DB 초기화/마이그레이션보다 먼저 검증한다. 잘못된 CSV 로
 	// 부팅 시 PurgeLegacyItemIDs(destructive)가 실행돼 데이터가 사라지는 것을

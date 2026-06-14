@@ -21,6 +21,9 @@ type Config struct {
 	JWTPrivKey     string
 	ServerPort     string
 	AppEnv         string
+	// LogLevel: zerolog 글로벌 레벨(trace/debug/info/warn/error/...). 빈 값이면
+	// logger.Init 이 AppEnv 기준 기본값(dev=debug, 그 외=info)을 적용한다.
+	LogLevel       string
 	TrustedProxies string // comma-separated CIDRs; empty = trust no proxies
 	// DiagIntervalSecs > 0 enables periodic pool-stat + memory logging (for load tests).
 	DiagIntervalSecs int
@@ -42,6 +45,7 @@ func Load() (*Config, error) {
 		JWTPrivKey:  os.Getenv("JWT_PRIVATE_KEY"),
 		ServerPort:       getEnvOrDefault("SERVER_PORT", "8080"),
 		AppEnv:           getEnvOrDefault("APP_ENV", "development"),
+		LogLevel:         os.Getenv("LOG_LEVEL"),
 		TrustedProxies:   os.Getenv("TRUSTED_PROXIES"),
 		DiagIntervalSecs: getEnvInt("DIAG_INTERVAL_SECS", 0),
 		SkinsCSVPath:      getEnvOrDefault("SKINS_CSV_PATH", "Data/skins.csv"),
