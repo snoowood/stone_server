@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -22,7 +23,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog/log"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"github.com/gensdeis/stone-server/internal/gacha"
 	"github.com/gensdeis/stone-server/pkg/gameconfig"
@@ -153,16 +155,19 @@ func (h *Handler) Pray(c *gin.Context) {
 
 	resp, err := h.execPray(ctx, playerID, req, baseRarity, targetRarity, successRate, infinite, ignoreItems)
 	if err != nil {
+		lg := zerolog.Ctx(ctx)
 		switch {
 		case errors.Is(err, errInsufficientPoints):
+			lg.Debug().Str("code", "INSUFFICIENT_POINTS").Msg("vow rejected")
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
 		case errors.Is(err, errInsufficientMaterials):
+			lg.Debug().Str("code", "INSUFFICIENT_MATERIALS").Msg("vow rejected")
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient materials", "code": "INSUFFICIENT_MATERIALS"})
 		case errors.Is(err, errNoRewardPool):
-			log.Error().Str("player_id", playerID).Msg("vow: no reward pool for result rarity")
+			lg.Error().Msg("vow: no reward pool for result rarity")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		default:
-			log.Error().Err(err).Msg("vow pray")
+			lg.Error().Err(err).Msg("vow pray")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		}
 		return
@@ -284,20 +289,40 @@ func (h *Handler) execPray(
 		return nil, err
 	}
 
+	result := "Failed"
+	if success {
+		result = "Success"
+	}
+
+	// 5. vow_logs 감사 행 — gacha_logs(execPull step 7) 와 대칭. 같은 tx 안에서 INSERT 해
+	//    포인트 차감·재료 소모·보상 지급과 원자적으로 커밋한다(분쟁/밸런스 증거 유실 방지).
+	//    materials 는 정규화 자식 테이블 대신 JSON 한 칼럼(단순성 우선).
+	materialsJSON, err := json.Marshal(req.Materials)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO vow_logs
+		    (id, player_id, base_rarity, target_rarity, success_rate, cost_points,
+		     result, reward_item_id, reward_rarity, is_duplicate, materials)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.New().String(), playerID, string(baseRarity), string(targetRarity),
+		successRate, cost, result, rewardItemID, string(rewardRarity),
+		grant.IsDuplicate, string(materialsJSON),
+	); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
-	// 5. 커밋 후 전체 인벤토리 재조회(클라가 권위 상태로 교체).
+	// 6. 커밋 후 전체 인벤토리 재조회(클라가 권위 상태로 교체).
 	inv, err := h.loadInventory(ctx, playerID)
 	if err != nil {
 		return nil, err
 	}
 
-	result := "Failed"
-	if success {
-		result = "Success"
-	}
 	return &prayResponse{
 		Result:       result,
 		RewardItemID: rewardItemID,

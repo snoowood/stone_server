@@ -14,6 +14,11 @@ func RequestLogger() gin.HandlerFunc {
 		requestID := uuid.New().String()
 		c.Set("request_id", requestID)
 
+		// 요청 단위 바운드 로거를 컨텍스트에 심어, 핸들러가 zerolog.Ctx(c.Request.Context())
+		// 로 남기는 로그가 request_id 로 아래 request 라인과 조인되게 한다.
+		reqLog := log.With().Str("request_id", requestID).Logger()
+		c.Request = c.Request.WithContext(reqLog.WithContext(c.Request.Context()))
+
 		c.Next()
 
 		event := log.Info().

@@ -58,6 +58,24 @@ CREATE TABLE IF NOT EXISTS gacha_logs (
 CREATE INDEX IF NOT EXISTS idx_gacha_logs_player_pulled_at
     ON gacha_logs (player_id, pulled_at DESC);
 
+CREATE TABLE IF NOT EXISTS vow_logs (
+    id             TEXT PRIMARY KEY,
+    player_id      TEXT NOT NULL REFERENCES players(id),
+    base_rarity    TEXT NOT NULL,
+    target_rarity  TEXT NOT NULL,
+    success_rate   REAL NOT NULL DEFAULT 0,
+    cost_points    REAL NOT NULL DEFAULT 0,
+    result         TEXT NOT NULL,
+    reward_item_id TEXT NOT NULL,
+    reward_rarity  TEXT NOT NULL,
+    is_duplicate   INTEGER NOT NULL DEFAULT 0,
+    materials      TEXT NOT NULL DEFAULT '',
+    prayed_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vow_logs_player_prayed_at
+    ON vow_logs (player_id, prayed_at DESC);
+
 CREATE TABLE IF NOT EXISTS player_achievements (
     player_id      TEXT NOT NULL REFERENCES players(id),
     achievement_id TEXT NOT NULL,

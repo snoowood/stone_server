@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog"
 
 	"github.com/gensdeis/stone-server/internal/auth"
 	"github.com/gensdeis/stone-server/pkg/kvstore"
@@ -20,6 +21,7 @@ func JWTAuth(pubKey *rsa.PublicKey, kv kvstore.KVStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr, ok := bearerToken(c)
 		if !ok {
+			zerolog.Ctx(c.Request.Context()).Debug().Str("reason", "missing_or_malformed_auth_header").Msg("auth rejected")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "missing or malformed authorization header",
 				"code":  "UNAUTHORIZED",
@@ -35,6 +37,7 @@ func JWTAuth(pubKey *rsa.PublicKey, kv kvstore.KVStore) gin.HandlerFunc {
 			return pubKey, nil
 		})
 		if err != nil {
+			zerolog.Ctx(c.Request.Context()).Debug().Err(err).Str("reason", "invalid_token").Msg("auth rejected")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid or expired token",
 				"code":  "UNAUTHORIZED",
@@ -46,12 +49,14 @@ func JWTAuth(pubKey *rsa.PublicKey, kv kvstore.KVStore) gin.HandlerFunc {
 		_, err = kv.Get(c.Request.Context(), fmt.Sprintf("session:%s", claims.ID))
 		if err != nil {
 			if errors.Is(err, kvstore.ErrNotFound) {
+				zerolog.Ctx(c.Request.Context()).Warn().Str("reason", "session_revoked").Str("player_id", claims.PlayerID).Msg("auth rejected")
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 					"error": "session revoked or expired",
 					"code":  "UNAUTHORIZED",
 				})
 				return
 			}
+			zerolog.Ctx(c.Request.Context()).Error().Err(err).Str("reason", "session_store_error").Msg("auth session-store lookup failed")
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 				"error": "internal error",
 				"code":  "INTERNAL_ERROR",
@@ -61,6 +66,9 @@ func JWTAuth(pubKey *rsa.PublicKey, kv kvstore.KVStore) gin.HandlerFunc {
 
 		c.Set("player_id", claims.PlayerID)
 		c.Set("jti", claims.ID)
+		// 인증 성공 후 바운드 로거에 player_id 추가 → 이후 핸들러 로그가 player_id 로도 조인된다.
+		reqLog := zerolog.Ctx(c.Request.Context()).With().Str("player_id", claims.PlayerID).Logger()
+		c.Request = c.Request.WithContext(reqLog.WithContext(c.Request.Context()))
 		c.Next()
 	}
 }
@@ -71,6 +79,7 @@ func JWTSignatureAuth(pubKey *rsa.PublicKey) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr, ok := bearerToken(c)
 		if !ok {
+			zerolog.Ctx(c.Request.Context()).Debug().Str("reason", "missing_or_malformed_auth_header").Msg("auth rejected")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "missing or malformed authorization header",
 				"code":  "UNAUTHORIZED",
@@ -86,6 +95,7 @@ func JWTSignatureAuth(pubKey *rsa.PublicKey) gin.HandlerFunc {
 			return pubKey, nil
 		})
 		if err != nil {
+			zerolog.Ctx(c.Request.Context()).Debug().Err(err).Str("reason", "invalid_token").Msg("auth rejected")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid or expired token",
 				"code":  "UNAUTHORIZED",

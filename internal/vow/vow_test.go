@@ -143,6 +143,80 @@ func TestPray_Success_TargetRarity(t *testing.T) {
 	}
 }
 
+// vow_logs 감사 행이 성공 시 정확한 필드로 1건 기록되는지 검증(분쟁/밸런스 증거).
+func TestPray_WritesVowLog_Success(t *testing.T) {
+	h, db := newTestHandler(t, false)
+	seedPlayer(t, db, "p1", 1_000_000)
+	seedInventory(t, db, "p1", "c_acc1", "common", 7)
+
+	w, _ := callPray(h, "p1", `{"materials":[{"item_id":"c_acc1","count":7}],"n_power":28800}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	ctx := context.Background()
+	var cnt int
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM vow_logs WHERE player_id = ?`, "p1").Scan(&cnt); err != nil {
+		t.Fatalf("count vow_logs: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("want exactly 1 vow_logs row, got %d", cnt)
+	}
+
+	var (
+		baseRarity, targetRarity, result, rewardItemID, rewardRarity, materials string
+		successRate, costPoints                                                 float64
+		isDuplicate                                                             bool
+	)
+	if err := db.QueryRow(ctx,
+		`SELECT base_rarity, target_rarity, success_rate, cost_points, result, reward_item_id, reward_rarity, is_duplicate, materials
+		 FROM vow_logs WHERE player_id = ?`, "p1").Scan(
+		&baseRarity, &targetRarity, &successRate, &costPoints, &result, &rewardItemID, &rewardRarity, &isDuplicate, &materials,
+	); err != nil {
+		t.Fatalf("read vow_logs: %v", err)
+	}
+	if baseRarity != "common" || targetRarity != "uncommon" {
+		t.Errorf("base/target: want common/uncommon, got %q/%q", baseRarity, targetRarity)
+	}
+	if result != "Success" {
+		t.Errorf("result: want Success, got %q", result)
+	}
+	if rewardRarity != "uncommon" || rewardItemID != "u_acc1" {
+		t.Errorf("reward: want uncommon/u_acc1, got %q/%q", rewardRarity, rewardItemID)
+	}
+	if successRate != 100 {
+		t.Errorf("success_rate: want 100, got %v", successRate)
+	}
+	if costPoints != 28800 {
+		t.Errorf("cost_points: want 28800, got %v", costPoints)
+	}
+	if isDuplicate {
+		t.Errorf("first uncommon → is_duplicate should be false")
+	}
+	if !strings.Contains(materials, "c_acc1") {
+		t.Errorf("materials JSON should contain c_acc1, got %q", materials)
+	}
+}
+
+// 거절(포인트 부족)은 grant 이전에 끝나므로 vow_logs 행이 남지 않아야 한다(원자성/고아로그 방지).
+func TestPray_NoVowLogOnRejection(t *testing.T) {
+	h, db := newTestHandler(t, false)
+	seedPlayer(t, db, "p1", 10) // 부족
+	seedInventory(t, db, "p1", "c_acc1", "common", 7)
+
+	w, _ := callPray(h, "p1", `{"materials":[{"item_id":"c_acc1","count":7}],"n_power":28800}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int
+	if err := db.QueryRow(context.Background(), `SELECT COUNT(*) FROM vow_logs WHERE player_id = ?`, "p1").Scan(&cnt); err != nil {
+		t.Fatalf("count vow_logs: %v", err)
+	}
+	if cnt != 0 {
+		t.Errorf("rejected pray should write no vow_logs row, got %d", cnt)
+	}
+}
+
 // debug force_failure (allowDebug) → base rarity 보상.
 func TestPray_ForceFailure_BaseRarity(t *testing.T) {
 	h, db := newTestHandler(t, true)
