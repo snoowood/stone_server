@@ -74,6 +74,9 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 	steamID, err := h.steam.AuthenticateTicket(ctx, req.Ticket)
 	if err != nil {
 		if errors.Is(err, ErrInvalidTicket) {
+			// 거절 사유(무효/밴/가족공유)는 로그로 구분하되, 응답은 기존 INVALID_TICKET 으로
+			// 통일해 클라 계약 변경을 피한다.
+			log.Warn().Err(err).Msg("auth: steam ticket rejected")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid steam ticket", "code": "INVALID_TICKET"})
 			return
 		}
