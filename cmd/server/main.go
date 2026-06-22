@@ -176,6 +176,14 @@ func main() {
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
 
 	var wg sync.WaitGroup
+	// LOG-3: rebuild the retry queue from achievement_retry_queue (the source of truth)
+	// before the worker starts ticking — recovers the dev MemStore queue (wiped on
+	// restart) and reconciles a surviving prod Redis queue without duplicating rows.
+	if reloaded, err := achievement.ReloadPendingRetries(ctx, sdb, kv, achievement.DefaultMaxRetries); err != nil {
+		log.Error().Err(err).Msg("achievement: reload pending retries failed")
+	} else if reloaded > 0 {
+		log.Info().Int("reloaded", reloaded).Msg("achievement: reloaded pending retries into queue")
+	}
 	achievement.NewWorker(sdb, kv, steamAchClient).Start(ctx, &wg)
 
 	if cfg.AppEnv == "production" {
