@@ -68,6 +68,51 @@ func TestBackfillCairnSlots_GrowAndShrink(t *testing.T) {
 	db.Close()
 }
 
+// TestNew_MirrorsMigration0009OnReusedDB simulates a reused DB whose player_states
+// predates migrations/000009 (which added enlightenment_rate + last_sync_at, never
+// mirrored here). New must add BOTH columns and backfill last_sync_at to non-NULL
+// without failing on "no such column" — guarding the E2E-3 first-gacha-409 fix and the
+// accrual queries (which reference enlightenment_rate) on legacy SQLite DBs.
+func TestNew_MirrorsMigration0009OnReusedDB(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx,
+		`CREATE TABLE player_states (player_id TEXT PRIMARY KEY, enlightenment_pts REAL NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `INSERT INTO player_states (player_id) VALUES ('p1')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	raw.Close()
+
+	db, err := New(path, 5, 30)
+	if err != nil {
+		t.Fatalf("New on reused legacy DB (column-add + backfill must not fail): %v", err)
+	}
+	defer db.Close()
+
+	var (
+		lastSyncNonNull int
+		rate            float64
+	)
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*), MAX(enlightenment_rate) FROM player_states WHERE player_id = 'p1' AND last_sync_at IS NOT NULL`,
+	).Scan(&lastSyncNonNull, &rate); err != nil {
+		t.Fatalf("query player_states: %v", err)
+	}
+	if lastSyncNonNull != 1 {
+		t.Errorf("reused-DB row must have last_sync_at backfilled to non-NULL")
+	}
+	if rate != 1.0 {
+		t.Errorf("reused-DB row must have enlightenment_rate defaulted to 1.0, got %v", rate)
+	}
+}
+
 // startedAts returns each slot's started_at ordered by slot_index.
 func startedAts(t *testing.T, db *sql.DB, playerID string) []time.Time {
 	t.Helper()

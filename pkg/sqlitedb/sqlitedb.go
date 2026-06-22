@@ -179,6 +179,33 @@ func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 		}
 	}
 
+	// migrations/000009 added enlightenment_rate + last_sync_at to player_states but was
+	// never mirrored here, so a DB predating it lacks both columns. Add them (idempotent)
+	// for reused DBs — without this, startup or a later /player/* | /gacha query fails
+	// with "no such column". Fresh DBs already have them via the schema const above, so
+	// these ALTERs just hit duplicate-column and are swallowed.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE player_states ADD COLUMN enlightenment_rate REAL NOT NULL DEFAULT 1.0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add player_states.enlightenment_rate: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE player_states ADD COLUMN last_sync_at TEXT"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add player_states.last_sync_at: %w", err)
+		}
+	}
+
+	// E2E-3 (migrations/000015): backfill last_sync_at for reused DBs. Rows created
+	// before initPlayerState anchored last_sync_at carry NULL, which accrues 0 and
+	// 409s the first gacha. Anchor NULLs to now so accrual starts; no-op on fresh DBs.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE player_states SET last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE last_sync_at IS NULL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill last_sync_at: %w", err)
+	}
+
 	// M2 (migrations/000011): WishCairn 슬롯 backfill for reused DBs.
 	// 슬롯 수/시차는 game-config.xml 에서 주입 (하드코딩 제거, T3-S3b).
 	if err := backfillCairnSlots(ctx, db, slotCount, phaseOffsetSeconds); err != nil {

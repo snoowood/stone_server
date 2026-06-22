@@ -1,0 +1,2 @@
+-- Irreversible data backfill: the original NULL last_sync_at values are not
+-- recoverable, so the down migration intentionally does nothing.
