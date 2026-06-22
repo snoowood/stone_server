@@ -6,8 +6,8 @@
 
 - **기반 계획**: [`docs/plans/audit-fix-plan-2026-06-20.md`](plans/audit-fix-plan-2026-06-20.md) — §0 표에 항목별 ✅/◐/⬜/⏸️ 상태 표기됨(이게 single source of truth).
 - **진행 플로우**: **claude 구현 → codex 검증 → 수정 → 커밋** (메모리 [project_workflow_claude_codex]).
-- **머지됨**: [PR #27](https://github.com/snoowood/stone_server/pull/27) (squash `0552c46`) — A0 보안 + A2 전체 + clean A3 (7커밋).
-- **진행 중 브랜치**: `fix/audit-server-p3-log5` — P3-SERVER(SEC-6 1단계 등) + (예정 LOG-5).
+- **머지됨**: [PR #27](https://github.com/snoowood/stone_server/pull/27)(`0552c46`, A0 보안+A2 전체+clean A3, 7커밋) · [PR #28](https://github.com/snoowood/stone_server/pull/28)(P3-SERVER + 본 핸드오프). **현재 main = #27 + #28.**
+- **🔜 다음 세션 시작점(내일)**: ① §3 **LOG-5**(즉시 가능·결정 불필요, 단 `balance_before` dialect 주의) → ② §8 **503 일관성**(소공수). 그 뒤 결정필요(§3 하단)·인프라(§6)·클라(§7)·R1 dialect(§5).
 - **범위 원칙**(메모리 [project_role_split]): 🟢 서버 단독 진행 / 🟦 인프라(compose·script)는 별도 배치 / 🔵 클라(Unity, 다른 담당자)는 영향·이유 공유 후 승인.
 
 ## 1. 검증 플로우 (그대로 이어쓸 것)
@@ -25,9 +25,9 @@ codex exec -s read-only - < /tmp/prompt.txt > /tmp/out.txt 2>&1
 ### PR #27 (머지됨)
 R2(코드절반) · P0-4 · E2E-3 · LOG-2 · LOG-3 · LOG-4① · SRE-4 · SRE-5 · LOG-7 · SEC-3 · SEC-4(TrustedProxies 가드) · XC-3. 전 패키지 build/vet/test 통과 + codex 검증.
 
-### 브랜치 `fix/audit-server-p3-log5` (진행 중)
-- **P3-SERVER**: SEC-6 1단계(NewToken 에 `aud` 발급, **검증 강제는 2단계**) + SRE-8 주석 정정 + .env APP_ENV 경고 + steam/devauth `non-production`→`development` 주석.
-- (예정) **LOG-5**.
+### PR #28 (머지됨)
+- **P3-SERVER**: SEC-6 **1단계**(NewToken 에 `aud` 발급, **검증 강제는 2단계** — 아래 §3) + SRE-8 주석 정정 + .env APP_ENV 경고 + `non-production`→`development` 주석(steam/achievement/devauth/steam_mock/stub).
+- 본 핸드오프 문서.
 
 ## 3. 남은 서버 lane 작업 (🟢, 인프라/클라 제외)
 
@@ -36,7 +36,7 @@ R2(코드절반) · P0-4 · E2E-3 · LOG-2 · LOG-3 · LOG-4① · SRE-4 · SRE-
 ### 즉시 가능 (결정 불필요)
 | ID | 내용 | 위치 | 메모 |
 |---|---|---|---|
-| **LOG-5** | 경제 감사 `balance_before`/`after`/`accrued_pts` 완전 기록 | gacha.go/vow.go INSERT + 마이그레이션 000016 + sqlitedb 스키마 | ⚠️ `balance_before` 는 `UPDATE ... RETURNING` 이 **새 값만** 줘서 old 값을 못 읽음 → `UPDATE...FROM (SELECT ... )` 또는 별도 캡처 필요(원자성 유지). SQLite(modernc)·PG dialect 차이 주의. balance_after 는 이미 RETURNING 으로 있음 |
+| **LOG-5** ← **내일 시작** | 경제 감사 `balance_before`/`after`/`accrued_pts` 완전 기록 | gacha.go/vow.go INSERT + 마이그레이션 000016 + sqlitedb 스키마 | ⚠️ `balance_before` 는 `UPDATE ... RETURNING` 이 **새 값만** 줘서 old 값을 못 읽음. **권장 접근(SQLite 활성경로)**: 같은 tx 안에서 accrual UPDATE **직전** `SELECT enlightenment_pts`(SQLite 는 MaxOpenConns=1 직렬화라 정확) → `accrued = after - before + cost`. PG(R1 후)는 `FOR UPDATE` 로 잠금 필요. balance_after 는 이미 RETURNING 으로 있음 |
 
 ### SEC-6 2단계 (24h 후 별도 배포) ⚠️
 - 1단계(aud 발급)는 브랜치에 있음. **24h(=jwtExpiry) 경과로 기존 aud 없는 토큰이 전부 회전된 뒤**, `internal/middleware/jwt.go` 의 `ParseWithClaims` 2곳(JWTAuth/JWTSignatureAuth)에 `jwt.WithIssuer("stone-server")` + `jwt.WithAudience("stone-server")` 옵션 추가. 1단계보다 먼저 하면 기존 토큰이 401 된다(절대 금지).
