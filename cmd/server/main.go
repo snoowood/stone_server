@@ -105,7 +105,11 @@ func main() {
 		}
 		defer rawDB.Close()
 		sdb = store.NewSQLAdapter(rawDB)
-		kv = kvstore.NewMemStore()
+		mem := kvstore.NewMemStore()
+		// XC-3: MemStore expires keys only lazily on access, so sweep periodically to
+		// reclaim write-once keys (e.g. refresh_lookup:<token>) that are never re-read.
+		mem.StartSweeper(ctx, 5*time.Minute)
+		kv = mem
 		log.Info().Str("path", cfg.SQLitePath).Msg("sqlite mode: db and session store ready")
 
 	} else {
@@ -196,6 +200,14 @@ func main() {
 		r.SetTrustedProxies(proxies)
 	} else {
 		r.SetTrustedProxies(nil)
+		// SEC-4: with no trusted proxies ClientIP is the direct peer — correct for a
+		// directly-exposed server, but if this instance actually sits behind a proxy/LB
+		// every request appears to come from the proxy IP and IP-based rate limits (e.g.
+		// /auth/steam 10/min) collapse into one shared bucket. Warn in production so a
+		// forgotten TRUSTED_PROXIES after introducing an LB is visible at boot.
+		if cfg.AppEnv == "production" {
+			log.Warn().Msg("TRUSTED_PROXIES is empty — IP-based rate limiting keys on the direct peer IP; set TRUSTED_PROXIES if this instance is behind a proxy/LB")
+		}
 	}
 	r.Use(middleware.RequestLogger())
 	r.Use(middleware.Recovery())
