@@ -11,7 +11,7 @@ func NoOp(c *gin.Context) {
 }
 
 // PlayerIDFromHeader sets player_id in context from X-Player-ID header.
-// Used only in non-production to verify player_id-based rate limiting.
+// Used only when APP_ENV == "development" to verify player_id-based rate limiting.
 func PlayerIDFromHeader() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if id := c.GetHeader("X-Player-ID"); id != "" {

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	jwtIssuer = "stone-server"
-	jwtExpiry = 24 * time.Hour
+	jwtIssuer   = "stone-server"
+	jwtAudience = "stone-server"
+	jwtExpiry   = 24 * time.Hour
 )
 
 // Claims holds the JWT payload.
@@ -56,6 +57,13 @@ func ParsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 
 // NewToken creates a signed RS256 JWT for the given player and jti.
 // Returns the token string, its expiry time, and any error.
+//
+// SEC-6 (2-stage rollout): this STAGE 1 starts issuing the `aud` claim (the `iss`
+// claim was already present). Validation is intentionally NOT yet tightened — the
+// middleware must keep accepting older tokens that lack `aud` until they all expire
+// (jwtExpiry = 24h). STAGE 2 (a separate deploy ≥24h later) adds
+// jwt.WithIssuer(jwtIssuer) + jwt.WithAudience(jwtAudience) to ParseWithClaims in
+// internal/middleware/jwt.go.
 func NewToken(privKey *rsa.PrivateKey, playerID, jti string) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(jwtExpiry)
@@ -64,6 +72,7 @@ func NewToken(privKey *rsa.PrivateKey, playerID, jti string) (string, time.Time,
 		PlayerID: playerID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    jwtIssuer,
+			Audience:  jwt.ClaimStrings{jwtAudience},
 			Subject:   playerID,
 			ID:        jti,
 			IssuedAt:  jwt.NewNumericDate(now),

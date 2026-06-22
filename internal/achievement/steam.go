@@ -14,7 +14,7 @@ type SteamAchievementClient interface {
 	SetAchievement(ctx context.Context, steamID, achievementID string) error
 }
 
-// NewSteamAchievementClientForEnv returns a mock in non-production environments.
+// NewSteamAchievementClientForEnv returns a mock when APP_ENV == "development".
 func NewSteamAchievementClientForEnv(appEnv, apiKey, appID string) SteamAchievementClient {
 	if appEnv == "development" {
 		return &mockSteamAchievementClient{}

@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// mockSteamClient is used in non-production environments.
+// mockSteamClient is used when APP_ENV == "development".
 // Any ticket value except "invalid_ticket" is accepted and returns a fixed steam_id.
 type mockSteamClient struct{}
 

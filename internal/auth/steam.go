@@ -36,8 +36,8 @@ type steamClient struct {
 	http   *http.Client
 }
 
-// NewSteamClientForEnv returns a mock SteamClient in non-production environments
-// and a real Steamworks-backed client in production.
+// NewSteamClientForEnv returns a mock SteamClient when APP_ENV == "development"
+// and a real Steamworks-backed client otherwise (production).
 func NewSteamClientForEnv(appEnv, apiKey, appID string) SteamClient {
 	if appEnv == "development" {
 		return newMockSteamClient()
