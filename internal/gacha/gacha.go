@@ -129,7 +129,8 @@ func (h *Handler) Pull(c *gin.Context) {
 		switch {
 		case errors.Is(err, errCooldownActive):
 			// 트랜잭션 내부 쿨다운 게이트(step 0a)가 동시 pull 경합으로 거절. pre-tx 와 동일 형태로 응답.
-			lg.Debug().Str("code", "COOLDOWN_ACTIVE").Msg("gacha pull rejected (tx gate)")
+			// LOG-7: 동시 pull 경합 신호라 Info 로 승격(정상 pre-tx 쿨다운 거절은 Debug 유지).
+			lg.Info().Str("code", "COOLDOWN_ACTIVE").Msg("gacha pull rejected (tx gate)")
 			nextAt, _ := h.getNextGachaAt(ctx, playerID)
 			body := gin.H{"error": "gacha cooldown active", "code": "COOLDOWN_ACTIVE"}
 			if nextAt != nil {
@@ -142,6 +143,7 @@ func (h *Handler) Pull(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "insufficient enlightenment points", "code": "INSUFFICIENT_POINTS"})
 			return
 		case errors.Is(err, errCairnIncomplete):
+			// 슬롯 미완성 상태의 정상 조기 요청에도 나오는 거절이라 Debug 유지(경합 전용 아님).
 			lg.Debug().Str("code", "CAIRN_INCOMPLETE").Msg("gacha pull rejected")
 			c.JSON(http.StatusForbidden, gin.H{"error": "cairn slot not complete", "code": "CAIRN_INCOMPLETE"})
 			return
@@ -156,6 +158,20 @@ func (h *Handler) Pull(c *gin.Context) {
 	}
 
 	h.setCooldown(ctx, playerID, res.NextGachaAt)
+
+	// LOG-4: one structured economy line per committed pull (post-commit, off the
+	// hot path, dependency-0). request_id/player_id come from the bound logger.
+	// Makes spend/drop-rate/dup-rate observable without scraping gacha_logs.
+	zerolog.Ctx(ctx).Info().
+		Str("event", "gacha_pull").
+		Str("item_id", res.ItemID).
+		Str("rarity", res.Rarity).
+		Bool("is_duplicate", res.IsDuplicate).
+		Float64("cost_points", h.cfg.PullCost).
+		Float64("balance_after", res.BalanceAfter).
+		Int("new_count", res.NewCount).
+		Msg("gacha pull committed")
+
 	c.JSON(http.StatusOK, res)
 }
 

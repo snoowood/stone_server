@@ -58,6 +58,9 @@ func RateLimiter(kv kvstore.KVStore) gin.HandlerFunc {
 			zerolog.Ctx(c.Request.Context()).Debug().
 				Str("identifier", identifier).Str("path", fullPath).
 				Int("limit", policy.limit).Int64("count", count).Msg("rate limit exceeded")
+			// LOG-7: tag the request line so rate-limit rejections aggregate via reject_code
+			// rather than a separate Info line per (potentially bot-driven) request.
+			c.Set("reject_code", "RATE_LIMIT_EXCEEDED")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded",
 				"code":  "RATE_LIMIT_EXCEEDED",

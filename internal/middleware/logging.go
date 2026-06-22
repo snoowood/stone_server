@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -21,17 +22,35 @@ func RequestLogger() gin.HandlerFunc {
 
 		c.Next()
 
-		event := log.Info().
+		// LOG-7: branch the request-line level by status so 5xx errors surface at
+		// Error and 4xx at Warn instead of being buried in the Info stream.
+		status := c.Writer.Status()
+		var event *zerolog.Event
+		switch {
+		case status >= 500:
+			event = log.Error()
+		case status >= 400:
+			event = log.Warn()
+		default:
+			event = log.Info()
+		}
+		event = event.
 			Str("request_id", requestID).
 			Str("method", c.Request.Method).
 			Str("path", c.Request.URL.Path).
-			Int("status", c.Writer.Status()).
+			Int("status", status).
 			Dur("latency", time.Since(start))
 
 		if playerID, exists := c.Get("player_id"); exists {
 			if id, ok := playerID.(string); ok && id != "" {
 				event = event.Str("player_id", id)
 			}
+		}
+		// LOG-7: reject_code lets 4xx request lines be aggregated by reason without a
+		// separate per-rejection log line (e.g. high-volume rate-limit bot noise).
+		// Middleware/handlers set it via c.Set("reject_code", …).
+		if code := c.GetString("reject_code"); code != "" {
+			event = event.Str("reject_code", code)
 		}
 
 		event.Msg("request")
