@@ -37,7 +37,7 @@ type Handler struct {
 	pool              *gacha.SkinPool
 	requiredItemCount int
 	tiers             map[string]gameconfig.VowTier // key: lowercased target rarity
-	allowDebug        bool                          // APP_ENV != production: honor debug_options
+	allowDebug        bool                          // APP_ENV == development: honor debug_options
 }
 
 // NewHandler wires the vow handler. tiers 는 lowercased TargetRarity 키 맵으로 인덱싱한다.
@@ -316,6 +316,21 @@ func (h *Handler) execPray(
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+
+	// LOG-4: one structured economy line per committed vow, emitted right after the
+	// commit (before the post-commit inventory reload) so a reload failure can't drop
+	// the record. request_id/player_id come from the bound logger.
+	zerolog.Ctx(ctx).Info().
+		Str("event", "vow_pray").
+		Str("result", result).
+		Str("base_rarity", string(baseRarity)).
+		Str("target_rarity", string(targetRarity)).
+		Float64("success_rate", successRate).
+		Str("reward_item_id", rewardItemID).
+		Str("reward_rarity", string(rewardRarity)).
+		Bool("is_duplicate", grant.IsDuplicate).
+		Float64("balance_after", newBalance).
+		Msg("vow pray committed")
 
 	// 6. 커밋 후 전체 인벤토리 재조회(클라가 권위 상태로 교체).
 	inv, err := h.loadInventory(ctx, playerID)

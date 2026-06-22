@@ -1,10 +1,80 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 )
+
+// capturingRoundTripper records the outgoing request and returns a canned response
+// without hitting the network.
+type capturingRoundTripper struct {
+	req      *http.Request
+	bodyText string
+	respBody string
+}
+
+func (c *capturingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.req = r
+	if r.Body != nil {
+		b, _ := io.ReadAll(r.Body)
+		c.bodyText = string(b)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(c.respBody)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// P0-4 regression: the publisher key + ticket must travel in the POST form body,
+// never in the URL (where they would leak into url.Error logs / proxy access logs /
+// metric path labels).
+func TestAuthenticateTicket_UsesPostFormBody(t *testing.T) {
+	const (
+		secretKey    = "PUBLISHER-SECRET-KEY"
+		secretTicket = "TICKET-ABCDEF"
+	)
+	rt := &capturingRoundTripper{
+		respBody: `{"response":{"params":{"result":"OK","steamid":"7656119","ownersteamid":"7656119"}}}`,
+	}
+	c := &steamClient{apiKey: secretKey, appID: "480", http: &http.Client{Transport: rt}}
+
+	id, err := c.AuthenticateTicket(context.Background(), secretTicket)
+	if err != nil {
+		t.Fatalf("AuthenticateTicket: %v", err)
+	}
+	if id != "7656119" {
+		t.Errorf("steamID: want 7656119, got %q", id)
+	}
+	if rt.req.Method != http.MethodPost {
+		t.Errorf("method: want POST, got %s", rt.req.Method)
+	}
+	// No secrets in the URL at all.
+	if rt.req.URL.RawQuery != "" {
+		t.Errorf("URL must carry no query, got %q", rt.req.URL.RawQuery)
+	}
+	full := rt.req.URL.String()
+	if strings.Contains(full, secretKey) || strings.Contains(full, secretTicket) {
+		t.Errorf("URL leaked a secret: %s", full)
+	}
+	if ct := rt.req.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+		t.Errorf("Content-Type: want form-urlencoded, got %q", ct)
+	}
+	form, err := url.ParseQuery(rt.bodyText)
+	if err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if form.Get("key") != secretKey || form.Get("ticket") != secretTicket ||
+		form.Get("appid") != "480" || form.Get("identity") != "stone-server" {
+		t.Errorf("form body missing expected params: %v", form)
+	}
+}
 
 func TestValidateTicketParams(t *testing.T) {
 	tests := []struct {

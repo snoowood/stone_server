@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type kvEntry struct {
@@ -151,3 +153,38 @@ func (m *MemStore) RPop(_ context.Context, key string) (string, error) {
 }
 
 func (m *MemStore) Ping(_ context.Context) error { return nil }
+
+// StartSweeper launches a goroutine that periodically evicts expired keys until ctx is
+// cancelled. MemStore otherwise expires keys only lazily on access (getEntry), so keys
+// that are written once and never read again — e.g. refresh_lookup:<token>, a fresh key
+// per login that is never re-fetched — accumulate forever, a slow memory leak. Prod uses
+// Redis (self-expiring), so this is an opt-in dev-mode safeguard; NewMemStore's signature
+// is unchanged. Each pass logs swept/remaining counts at Debug so the leak is observable.
+func (m *MemStore) StartSweeper(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				swept, remaining := m.sweep()
+				log.Debug().Int("swept", swept).Int("remaining_keys", remaining).Msg("memstore sweep")
+			}
+		}
+	}()
+}
+
+// sweep deletes all expired kv entries and returns (swept, remaining) counts.
+func (m *MemStore) sweep() (swept, remaining int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, e := range m.kv {
+		if e.expired() {
+			delete(m.kv, k)
+			swept++
+		}
+	}
+	return swept, len(m.kv)
+}

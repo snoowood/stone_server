@@ -48,6 +48,16 @@ func steamIDRow(id string) func() store.Row {
 	}
 }
 
+// retryCountRow models the `UPDATE ... RETURNING retry_count` on the failure path.
+func retryCountRow(n int) func() store.Row {
+	return func() store.Row {
+		return rowScan(func(dest ...any) error {
+			*dest[0].(*int) = n
+			return nil
+		})
+	}
+}
+
 // queueLen pops all items from key and returns the count. Destructive.
 func queueLen(kv kvstore.KVStore, key string) int {
 	count := 0
@@ -83,23 +93,52 @@ func TestProcessOne_SteamSuccess(t *testing.T) {
 func TestProcessOne_SteamFailure_ReturnsTrueAndUpdatesRetryCount(t *testing.T) {
 	kv := kvstore.NewMemStore()
 	db := &mockWorkerDB{
-		queryRowFns: []func() store.Row{steamIDRow("steam123")},
-		execFns: []func() (store.Result, error){
-			execOK(), // UPDATE retry_count + 1
-		},
+		// steam_id lookup, then UPDATE ... RETURNING retry_count (still under cap).
+		queryRowFns: []func() store.Row{steamIDRow("steam123"), retryCountRow(1)},
 	}
-	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute}
+	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute, maxRetries: 10}
 	requeue := w.processOne(context.Background(), "player-1:ACH_FIRST_PULL")
 
 	if !requeue {
-		t.Fatal("expected processOne to return true (requeue) on Steam failure")
-	}
-	if db.execCalls != 1 {
-		t.Fatalf("expected 1 exec call (retry_count update), got %d", db.execCalls)
+		t.Fatal("expected processOne to return true (requeue) on Steam failure under cap")
 	}
 	// processOne must NOT push to KV queue — that is processBatch's responsibility.
 	if queueLen(kv, retryQueue) != 0 {
 		t.Fatal("processOne must not push to KV directly")
+	}
+}
+
+// Once the bounded UPDATE returns retry_count == maxRetries the item must be
+// dead-lettered (return false, no re-queue) rather than retried forever.
+func TestProcessOne_DeadLetterAtCap_NoRequeue(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	db := &mockWorkerDB{
+		queryRowFns: []func() store.Row{steamIDRow("steam123"), retryCountRow(3)}, // reaches cap
+	}
+	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute, maxRetries: 3}
+
+	if requeue := w.processOne(context.Background(), "player-1:ACH_FIRST_PULL"); requeue {
+		t.Fatal("expected dead-letter (no re-queue) when new retry_count reaches maxRetries")
+	}
+	if queueLen(kv, retryQueue) != 0 {
+		t.Fatal("dead-lettered item must not be pushed to KV")
+	}
+}
+
+// A 0-row UPDATE (row already resolved, gone, or already dead-lettered) must drop the
+// item silently — no re-queue, no false dead-letter alert.
+func TestProcessOne_RowResolvedOrGone_Dropped(t *testing.T) {
+	kv := kvstore.NewMemStore()
+	db := &mockWorkerDB{
+		queryRowFns: []func() store.Row{
+			steamIDRow("steam123"),
+			func() store.Row { return rowErrH(sql.ErrNoRows) }, // UPDATE matched 0 rows
+		},
+	}
+	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute, maxRetries: 10}
+
+	if requeue := w.processOne(context.Background(), "player-1:ACH_FIRST_PULL"); requeue {
+		t.Fatal("expected drop (no re-queue) when the retry row is already resolved/gone")
 	}
 }
 
@@ -184,19 +223,17 @@ func TestProcessBatch_FailedItemNotRetriedInSameTick(t *testing.T) {
 	ctx := context.Background()
 	kv.LPush(ctx, retryQueue, "p1:ACH_FIRST_PULL")
 
+	// Exactly two queryRowFns (steam_id lookup + RETURNING retry_count) for a single
+	// processOne; a second call in the same batch would panic on the empty slice.
 	db := &mockWorkerDB{
-		queryRowFns: []func() store.Row{steamIDRow("steam123")},
-		execFns:     []func() (store.Result, error){execOK()},
+		queryRowFns: []func() store.Row{steamIDRow("steam123"), retryCountRow(1)},
 	}
-	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute}
+	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute, maxRetries: 10}
 	w.processBatch(ctx) // must not panic (would panic if processOne called twice)
 
 	// Item re-queued for the next tick, not retried in this one.
 	if queueLen(kv, retryQueue) != 1 {
 		t.Fatal("expected 1 item in queue after batch (deferred re-queue)")
-	}
-	if db.execCalls != 1 {
-		t.Fatalf("processOne should have been called exactly once, execCalls=%d", db.execCalls)
 	}
 }
 
@@ -213,10 +250,10 @@ func TestProcessBatch_FailedItemsDoNotLeapfrogNewProducer(t *testing.T) {
 	kv.LPush(ctx, retryQueue, "p2:ACH_RARE_UNLOCK")
 
 	db := &mockWorkerDB{
-		queryRowFns: []func() store.Row{steamIDRow("s1"), steamIDRow("s2")},
-		execFns:     []func() (store.Result, error){execOK(), execOK()}, // retry_count updates
+		// per item: steam_id lookup + RETURNING retry_count (under cap → re-queue).
+		queryRowFns: []func() store.Row{steamIDRow("s1"), retryCountRow(1), steamIDRow("s2"), retryCountRow(1)},
 	}
-	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute}
+	w := &Worker{db: db, kv: kv, steam: &mockSteam{err: errors.New("steam down")}, tickInterval: time.Minute, maxRetries: 10}
 
 	w.processBatch(ctx)
 

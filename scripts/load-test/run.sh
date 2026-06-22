@@ -19,7 +19,7 @@
 #
 # Requirements:
 #   - k6 installed: https://k6.io/docs/get-started/installation/
-#   - Server running with APP_ENV != production
+#   - Server running with APP_ENV=development
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

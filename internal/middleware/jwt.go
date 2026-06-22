@@ -56,10 +56,16 @@ func JWTAuth(pubKey *rsa.PublicKey, kv kvstore.KVStore) gin.HandlerFunc {
 				})
 				return
 			}
+			// Session-store (Redis in prod) is unreachable — this is a transient
+			// infra failure, not an auth decision. Return 503 + Retry-After so a
+			// store outage doesn't surface as a 500 to every valid-token user and
+			// the client paces retries instead of hammering. The ErrNotFound→401
+			// revocation path above is unchanged (no security regression).
 			zerolog.Ctx(c.Request.Context()).Error().Err(err).Str("reason", "session_store_error").Msg("auth session-store lookup failed")
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "internal error",
-				"code":  "INTERNAL_ERROR",
+			c.Header("Retry-After", "5")
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": "service temporarily unavailable",
+				"code":  "SERVICE_UNAVAILABLE",
 			})
 			return
 		}

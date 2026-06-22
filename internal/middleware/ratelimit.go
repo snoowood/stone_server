@@ -44,7 +44,7 @@ func RateLimiter(kv kvstore.KVStore) gin.HandlerFunc {
 		identifier := resolveIdentifier(c, policy.ipBased)
 		key := fmt.Sprintf("ratelimit:%s:%s:%s", identifier, c.Request.Method, fullPath)
 
-		count, err := incrRateLimit(c.Request.Context(), kv, key)
+		count, err := incrRateLimit(c.Request.Context(), kv, key, rateLimitWindow)
 		if err != nil {
 			// Store failure → fail open. 침묵 시 열화된 리미터를 탐지 못 하므로 Error 로 남긴다.
 			zerolog.Ctx(c.Request.Context()).Error().Err(err).
@@ -58,6 +58,9 @@ func RateLimiter(kv kvstore.KVStore) gin.HandlerFunc {
 			zerolog.Ctx(c.Request.Context()).Debug().
 				Str("identifier", identifier).Str("path", fullPath).
 				Int("limit", policy.limit).Int64("count", count).Msg("rate limit exceeded")
+			// LOG-7: tag the request line so rate-limit rejections aggregate via reject_code
+			// rather than a separate Info line per (potentially bot-driven) request.
+			c.Set("reject_code", "RATE_LIMIT_EXCEEDED")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded",
 				"code":  "RATE_LIMIT_EXCEEDED",
@@ -69,20 +72,34 @@ func RateLimiter(kv kvstore.KVStore) gin.HandlerFunc {
 	}
 }
 
-// incrRateLimit increments the counter and sets a 60s TTL on first increment.
-func incrRateLimit(ctx context.Context, kv kvstore.KVStore, key string) (int64, error) {
+const rateLimitWindow = 60 * time.Second
+
+// incrRateLimit increments the fixed-window counter for key and returns the new count.
+//
+// SEC-3: the first hit of a window is written with SetNX, which sets the value AND its
+// TTL in one atomic op. The previous IncrBy-then-Expire two-step could leave a TTL-less
+// key if the process died (or the Expire failed) in between, pinning that identifier at
+// 429 forever (a silent self-DoS). With prod sharing one Redis across instances this is
+// a real, not latent, risk.
+func incrRateLimit(ctx context.Context, kv kvstore.KVStore, key string, window time.Duration) (int64, error) {
+	ok, err := kv.SetNX(ctx, key, "1", window)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return 1, nil
+	}
 	count, err := kv.IncrBy(ctx, key, 1)
 	if err != nil {
 		return 0, err
 	}
 	if count == 1 {
-		if err := kv.Expire(ctx, key, 60*time.Second); err != nil {
-			// TTL 설정 실패 시 TTL 없는 카운터가 영구히 남아 해당 식별자가 무기한 429 로
-			// 묶일 수 있다(조용한 self-DoS). best-effort 로 키를 지워 다음 요청이 새로
-			// 시작하게 하고, 실패를 로그로 남겨 관측 가능하게 한다.
-			zerolog.Ctx(ctx).Error().Err(err).Str("key", key).Msg("rate limiter: failed to set TTL (counter dropped)")
+		// The key expired between SetNX and IncrBy, so IncrBy re-created it without a
+		// TTL. Re-arm it; if that fails, drop the key so the next request starts a fresh
+		// window instead of being pinned forever on a TTL-less poison key (self-DoS).
+		if err := kv.Expire(ctx, key, window); err != nil {
+			zerolog.Ctx(ctx).Error().Err(err).Str("key", key).Msg("rate limiter: failed to re-arm TTL, dropping key")
 			if delErr := kv.Del(ctx, key); delErr != nil {
-				// Del 까지 실패하면 TTL 없는 키가 남는다 — 마지막 침묵 경로를 닫는다.
 				zerolog.Ctx(ctx).Error().Err(delErr).Str("key", key).Msg("rate limiter: failed to delete TTL-less key")
 			}
 		}

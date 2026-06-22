@@ -16,6 +16,12 @@ import (
 
 const retryQueue = "ach:retry"
 
+// DefaultMaxRetries bounds how many times a single achievement sync is retried
+// before it is dead-lettered (left in achievement_retry_queue with
+// retry_count == DefaultMaxRetries and resolved_at IS NULL — a queryable terminal
+// state) instead of being re-queued forever.
+const DefaultMaxRetries = 10
+
 type workerDB interface {
 	QueryRow(ctx context.Context, query string, args ...any) store.Row
 	Exec(ctx context.Context, query string, args ...any) (store.Result, error)
@@ -26,10 +32,62 @@ type Worker struct {
 	kv           kvstore.KVStore
 	steam        SteamAchievementClient
 	tickInterval time.Duration
+	maxRetries   int
 }
 
 func NewWorker(db store.DB, kv kvstore.KVStore, steam SteamAchievementClient) *Worker {
-	return &Worker{db: db, kv: kv, steam: steam, tickInterval: time.Minute}
+	return &Worker{db: db, kv: kv, steam: steam, tickInterval: time.Minute, maxRetries: DefaultMaxRetries}
+}
+
+// ReloadPendingRetries reconciles the KV retry queue with achievement_retry_queue at
+// boot, treating the DB as the source of truth. It rebuilds the queue to exactly the
+// set of pending rows (resolved_at IS NULL AND retry_count < maxRetries): it queries
+// that set first (so a query failure leaves the existing queue untouched), drains the
+// queue, then re-enqueues the pending set.
+//
+// This both (a) recovers the dev MemStore queue, which is wiped on every restart, and
+// (b) recovers rows orphaned in prod when a crash lands between the worker's RPop and
+// its deferred RPush — a coarse "skip if queue non-empty" guard would miss those. The
+// drain+rebuild also avoids double-enqueuing rows already present. Returns the number
+// of rows re-enqueued. Safe because it runs before the worker and HTTP server start, so
+// nothing else touches the queue concurrently.
+func ReloadPendingRetries(ctx context.Context, db store.DB, kv kvstore.KVStore, maxRetries int) (int, error) {
+	rows, err := db.Query(ctx,
+		`SELECT player_id, achievement_id FROM achievement_retry_queue
+		 WHERE resolved_at IS NULL AND retry_count < ?
+		 ORDER BY next_retry_at`, maxRetries)
+	if err != nil {
+		return 0, err
+	}
+	var items []string
+	for rows.Next() {
+		var playerID, achievementID string
+		if err := rows.Scan(&playerID, &achievementID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		items = append(items, playerID+":"+achievementID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	// Drain whatever survived (dev: already empty; prod: a stale subset/superset).
+	for {
+		if _, err := kv.RPop(ctx, retryQueue); errors.Is(err, kvstore.ErrNotFound) {
+			break
+		} else if err != nil {
+			return 0, err
+		}
+	}
+	// Re-enqueue in next_retry_at order: LPush in order → RPop yields the same order.
+	for _, item := range items {
+		if err := kv.LPush(ctx, retryQueue, item); err != nil {
+			return 0, err
+		}
+	}
+	return len(items), nil
 }
 
 // Start launches the retry worker goroutine.
@@ -115,20 +173,44 @@ func (w *Worker) processOne(ctx context.Context, item string) (requeue bool) {
 	}
 
 	if err := w.steam.SetAchievement(ctx, steamID, achievementID); err != nil {
-		log.Warn().Err(err).
-			Str("player_id", playerID).
-			Str("achievement_id", achievementID).
-			Msg("achievement worker: steam retry failed, re-queuing")
-
 		nextRetry := time.Now().Add(w.tickInterval).UTC()
-		if _, execErr := w.db.Exec(ctx,
+		// LOG-3: bound retries. Increment under `retry_count < maxRetries` and read the new
+		// count back so the cap decision is exact (no extra Steam call past the cap):
+		//   - no row updated (sql.ErrNoRows): already resolved, gone, or already
+		//     dead-lettered → drop silently (no false dead-letter alert).
+		//   - new count == maxRetries: cap reached → dead-letter (stop re-queuing).
+		//   - otherwise: re-queue for the next tick.
+		var newCount int
+		scanErr := w.db.QueryRow(ctx,
 			`UPDATE achievement_retry_queue
 			 SET retry_count = retry_count + 1, last_error = ?, next_retry_at = ?
-			 WHERE player_id = ? AND achievement_id = ? AND resolved_at IS NULL`,
-			err.Error(), nextRetry.Format(time.RFC3339), playerID, achievementID,
-		); execErr != nil {
-			log.Error().Err(execErr).Msg("achievement worker: update retry queue on failure")
+			 WHERE player_id = ? AND achievement_id = ? AND resolved_at IS NULL AND retry_count < ?
+			 RETURNING retry_count`,
+			err.Error(), nextRetry.Format(time.RFC3339), playerID, achievementID, w.maxRetries,
+		).Scan(&newCount)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return false
 		}
+		if scanErr != nil {
+			log.Error().Err(scanErr).
+				Str("player_id", playerID).Str("achievement_id", achievementID).
+				Msg("achievement worker: update retry queue on failure, re-queuing")
+			return true
+		}
+		if newCount >= w.maxRetries {
+			// Dead-letter: the row stays resolved_at IS NULL with retry_count ==
+			// maxRetries (terminal, excluded from boot reload). Error level so a
+			// permanently-stuck sync surfaces for manual intervention.
+			log.Error().Err(err).
+				Str("player_id", playerID).Str("achievement_id", achievementID).
+				Int("retry_count", newCount).
+				Msg("achievement worker: dead-lettered after max retries")
+			return false
+		}
+		log.Warn().Err(err).
+			Str("player_id", playerID).Str("achievement_id", achievementID).
+			Int("retry_count", newCount).
+			Msg("achievement worker: steam retry failed, re-queuing")
 		return true
 	}
 

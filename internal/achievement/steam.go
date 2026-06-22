@@ -16,7 +16,7 @@ type SteamAchievementClient interface {
 
 // NewSteamAchievementClientForEnv returns a mock in non-production environments.
 func NewSteamAchievementClientForEnv(appEnv, apiKey, appID string) SteamAchievementClient {
-	if appEnv != "production" {
+	if appEnv == "development" {
 		return &mockSteamAchievementClient{}
 	}
 	return &steamAchievementClient{

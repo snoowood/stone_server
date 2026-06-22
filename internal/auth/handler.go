@@ -156,7 +156,15 @@ func upsertPlayer(ctx context.Context, db store.DB, steamID string) (string, err
 }
 
 func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, playerID string) error {
-	const q = `INSERT INTO player_states (player_id) VALUES (?) ON CONFLICT (player_id) DO NOTHING`
+	// E2E-3: anchor last_sync_at = now at creation. With a NULL last_sync_at the
+	// passive-accrual formula MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0,
+	// so a brand-new account accrues nothing and its first gacha (which fires before
+	// the first /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
+	// accrual start from t0. ON CONFLICT DO NOTHING keeps re-login a no-op (existing
+	// rows untouched). Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
+	const q = `INSERT INTO player_states (player_id, last_sync_at)
+	           VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+	           ON CONFLICT (player_id) DO NOTHING`
 	if _, err := db.Exec(ctx, q, playerID); err != nil {
 		return err
 	}

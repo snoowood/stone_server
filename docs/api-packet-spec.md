@@ -29,7 +29,7 @@
 | 14 | POST | `/auth/dev` | Public(dev) | UUID 무비번 로그인 | `uuid` | 200 |
 | 15 | GET | `/internal/dev-token` | dev | 로드테스트 토큰 | `?steam_id` | 200 |
 
-> 인증: **Public**=토큰 불필요(+rate limit) / **JWT**=`Authorization: Bearer <jwt>` 필수 / **JWT 서명**=서명만 검증(로그아웃용) / **dev**=`APP_ENV != production` 에서만 등록.
+> 인증: **Public**=토큰 불필요(+rate limit) / **JWT**=`Authorization: Bearer <jwt>` 필수 / **JWT 서명**=서명만 검증(로그아웃용) / **dev**=`APP_ENV == development` 에서만 등록.
 
 ---
 
@@ -161,7 +161,7 @@
 | `debug_options` | object? | — | dev 전용, production 에선 무시 |
 
 **`material`**: `item_id`(string), `count`(int)
-**`debug_options`** (APP_ENV≠production 에서만 적용): `force_success`, `force_failure`, `infinite_n_power`, `ignore_required_items`, `local_pray` (모두 bool). `local_pray` 는 클라가 로컬 제작으로 처리할 때 쓰는 플래그(이 경우 서버 호출 자체를 안 함) — 서버는 필드를 받더라도 사용하지 않는다.
+**`debug_options`** (APP_ENV=development 에서만 적용): `force_success`, `force_failure`, `infinite_n_power`, `ignore_required_items`, `local_pray` (모두 bool). `local_pray` 는 클라가 로컬 제작으로 처리할 때 쓰는 플래그(이 경우 서버 호출 자체를 안 함) — 서버는 필드를 받더라도 사용하지 않는다.
 
 **응답 200**
 | 필드 | 타입 | 설명 |

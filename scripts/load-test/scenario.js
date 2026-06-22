@@ -20,7 +20,7 @@
  *
  * Prerequisites:
  *   - k6: https://k6.io/docs/get-started/installation/
- *   - Server running with APP_ENV != production (enables /api/v1/internal/dev-token)
+ *   - Server running with APP_ENV=development (enables /api/v1/internal/dev-token)
  */
 
 import http from 'k6/http';

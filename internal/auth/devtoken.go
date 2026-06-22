@@ -8,7 +8,7 @@ import (
 )
 
 // DevToken handles GET /api/v1/internal/dev-token?steam_id=X.
-// Only registered when APP_ENV != production; used by load-test setup to
+// Only registered when APP_ENV == development; used by load-test setup to
 // mint JWTs without hitting the auth/steam rate limit.
 func (h *Handler) DevToken(c *gin.Context) {
 	steamID := c.Query("steam_id")
