@@ -37,7 +37,7 @@ type Handler struct {
 	pool              *gacha.SkinPool
 	requiredItemCount int
 	tiers             map[string]gameconfig.VowTier // key: lowercased target rarity
-	allowDebug        bool                          // APP_ENV != production: honor debug_options
+	allowDebug        bool                          // APP_ENV == development: honor debug_options
 }
 
 // NewHandler wires the vow handler. tiers 는 lowercased TargetRarity 키 맵으로 인덱싱한다.

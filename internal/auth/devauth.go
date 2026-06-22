@@ -14,7 +14,7 @@ type devAuthRequest struct {
 }
 
 // AuthDev handles POST /api/v1/auth/dev — UUID-based passwordless login for
-// non-production environments. Registered only when APP_ENV != "production".
+// non-production environments. Registered only when APP_ENV == "development".
 // The client sends a stable UUID it generated and persisted locally; the server
 // upserts a player keyed on that UUID and returns the same JWT/refresh pair as
 // the live Steam flow.

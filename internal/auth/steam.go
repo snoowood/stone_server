@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -38,7 +39,7 @@ type steamClient struct {
 // NewSteamClientForEnv returns a mock SteamClient in non-production environments
 // and a real Steamworks-backed client in production.
 func NewSteamClientForEnv(appEnv, apiKey, appID string) SteamClient {
-	if appEnv != "production" {
+	if appEnv == "development" {
 		return newMockSteamClient()
 	}
 	return NewSteamClient(apiKey, appID)
@@ -105,12 +106,17 @@ func (c *steamClient) AuthenticateTicket(ctx context.Context, ticket string) (st
 	params.Set("ticket", ticket)
 	params.Set("identity", "stone-server")
 
-	endpoint := "https://partner.steam-api.com/ISteamUserAuth/AuthenticateUserTicket/v1/?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	// POST form body (not GET query) so the publisher key + ticket never appear in the
+	// URL — keeps them out of url.Error logs, proxy/access logs, and metric path labels.
+	// Mirrors internal/achievement/steam.go.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://partner.steam-api.com/ISteamUserAuth/AuthenticateUserTicket/v1/",
+		strings.NewReader(params.Encode()),
+	)
 	if err != nil {
 		return "", fmt.Errorf("build steam request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.http.Do(req)
 	if err != nil {

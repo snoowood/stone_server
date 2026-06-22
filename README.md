@@ -75,7 +75,7 @@ curl http://localhost:8080/api/v1/health
 
 ## Docker Compose 실행 (로컬 PostgreSQL + Redis 모드)
 
-루트 `docker-compose.yml` 은 **로컬/개발용**이다. `APP_ENV` 는 `.env`(기본 `development`)가 결정하므로 dev 엔드포인트·mock Steam 이 활성화된다.
+루트 `docker-compose.yml` 은 **로컬/개발용**이다. `APP_ENV` 는 `.env` 가 결정한다(`.env.example` 은 `development` 를 제공; 미설정 시 서버가 부팅을 거부). `development` 이면 dev 엔드포인트·mock Steam 이 활성화된다.
 
 ```bash
 cp .env.example .env
@@ -99,7 +99,7 @@ docker compose logs -f app
 | `REDIS_URL` | PG 모드 | — | Redis 연결 URL |
 | `SQLITE_PATH` | SQLite 모드 | — | SQLite 파일 경로 (설정 시 PG/Redis 불필요) |
 | `SERVER_PORT` | ❌ | `8080` | HTTP 리슨 포트 |
-| `APP_ENV` | ❌ | `development` | `production`이면 Steam API 필수, Gin release 모드 |
+| `APP_ENV` | ✅ | — | `development` 또는 `production` (그 외 값·미설정 시 부팅 거부). `production`이면 Steam API 필수, Gin release 모드 |
 | `STEAM_API_KEY` | production | — | Steam Web API Key |
 | `STEAM_APP_ID` | production | — | Steam App ID |
 | `TRUSTED_PROXIES` | ❌ | — | 신뢰할 프록시 CIDR (쉼표 구분) |

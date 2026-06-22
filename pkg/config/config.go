@@ -44,7 +44,9 @@ func Load() (*Config, error) {
 		SteamAppID:  os.Getenv("STEAM_APP_ID"),
 		JWTPrivKey:  os.Getenv("JWT_PRIVATE_KEY"),
 		ServerPort:       getEnvOrDefault("SERVER_PORT", "8080"),
-		AppEnv:           getEnvOrDefault("APP_ENV", "development"),
+		// No default: an unset/empty APP_ENV must fail the whitelist in validate()
+		// rather than silently booting in development mode (the fail-open this guards).
+		AppEnv:           os.Getenv("APP_ENV"),
 		LogLevel:         os.Getenv("LOG_LEVEL"),
 		TrustedProxies:   os.Getenv("TRUSTED_PROXIES"),
 		DiagIntervalSecs: getEnvInt("DIAG_INTERVAL_SECS", 0),
@@ -59,6 +61,15 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	// APP_ENV must be an exact whitelist member. A typo (prod/Production) or an empty
+	// value must fail the boot loudly rather than silently falling through to the
+	// development branch (which would expose mock Steam + dev endpoints in production).
+	switch c.AppEnv {
+	case "development", "production":
+	default:
+		return fmt.Errorf("APP_ENV must be \"development\" or \"production\" (got %q)", c.AppEnv)
+	}
+
 	required := []struct {
 		name  string
 		value string

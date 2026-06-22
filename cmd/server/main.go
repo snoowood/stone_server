@@ -171,7 +171,7 @@ func main() {
 	playerHandler := player.NewHandler(sdb, kv, cairnCfg)
 
 	gachaHandler := gacha.NewHandler(sdb, kv, skinPool, gachaCfg, cairnCfg)
-	vowHandler := vow.NewHandler(sdb, skinPool, gameCfg.VowRequiredItemCount, gameCfg.VowTiers, cfg.AppEnv != "production")
+	vowHandler := vow.NewHandler(sdb, skinPool, gameCfg.VowRequiredItemCount, gameCfg.VowTiers, cfg.AppEnv == "development")
 	steamAchClient := achievement.NewSteamAchievementClientForEnv(cfg.AppEnv, cfg.SteamAPIKey, cfg.SteamAppID)
 	achievementHandler := achievement.NewHandler(sdb, kv, steamAchClient)
 
@@ -219,10 +219,10 @@ func main() {
 	secured.POST("/achievement/unlock", achievementHandler.Unlock)
 	secured.GET("/achievement/list", achievementHandler.List)
 
-	if cfg.AppEnv != "production" {
+	if cfg.AppEnv == "development" {
 		// 운영 오인지 방지: dev 엔드포인트(무비번 /auth/dev, 임의 steam_id /internal/dev-token)와
-		// mock Steam 클라이언트가 활성화됨을 부팅 로그에 눈에 띄게 남긴다. production 컨테이너가
-		// APP_ENV 누락으로 development 로 떨어지면 이 경고로 즉시 식별 가능.
+		// mock Steam 클라이언트가 활성화됨을 부팅 로그에 눈에 띄게 남긴다. APP_ENV 화이트리스트
+		// (config.validate)가 비정규값 부팅을 차단하므로, dev 활성은 명시적 development 에서만 발생.
 		log.Warn().
 			Str("app_env", cfg.AppEnv).
 			Msg("DEV ENDPOINTS ACTIVE — /auth/dev, /internal/dev-token, mock Steam enabled. MUST NOT run in production.")
