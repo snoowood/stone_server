@@ -190,7 +190,7 @@ func main() {
 		r.SetTrustedProxies(nil)
 	}
 	r.Use(middleware.RequestLogger())
-	r.Use(gin.Recovery())
+	r.Use(middleware.Recovery())
 
 	pubKey := privKey.Public().(*rsa.PublicKey)
 
@@ -243,13 +243,22 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	log.Info().Msg("shutdown signal received, draining workers")
-	wg.Wait()
-	log.Info().Msg("workers drained, shutting down server")
+	log.Info().Msg("shutdown signal received, stopping HTTP server")
 
+	// SRE-4: stop accepting new requests (and drain in-flight ones) BEFORE waiting
+	// on background workers, so no new work is enqueued into the workers while we
+	// drain them. The previous order (wg.Wait → srv.Shutdown) let live HTTP traffic
+	// keep feeding the workers during the "drain" window.
+	//
+	// TODO(multi-instance): before srv.Shutdown, flip a /health "draining" flag so it
+	// returns 503 and the load balancer deregisters this instance first, closing the
+	// in-flight-rejection window. Single-instance today, so not yet wired.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("server shutdown error")
 	}
+	log.Info().Msg("HTTP server stopped, draining workers")
+	wg.Wait()
+	log.Info().Msg("workers drained")
 }
