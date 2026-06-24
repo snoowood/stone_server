@@ -257,6 +257,19 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, errCairnIncomplete
 	}
 
+	// LOG-5: capture the pre-mutation balance for the gacha_logs audit trail. This is a
+	// read-only snapshot — it is NOT fed back into the accrue/deduct math below, so it does
+	// not reintroduce the double-accrual race the next step guards against (the balance
+	// change still happens atomically in one UPDATE). SQLite serializes writes
+	// (MaxOpenConns=1), so no other write lands between this SELECT and the UPDATE.
+	// (PG path, post R1(B): this read needs SELECT ... FOR UPDATE.)
+	var balanceBefore float64
+	if err := tx.QueryRow(ctx,
+		"SELECT enlightenment_pts FROM player_states WHERE player_id = ?", playerID,
+	).Scan(&balanceBefore); err != nil {
+		return nil, err
+	}
+
 	// 1+2. Atomic accrue + deduct + last_sync_at 갱신을 한 UPDATE 로.
 	//      별도 SELECT → 코드 계산 → UPDATE 분리하면 동일 elapsed window 를 두 번 가산할 race
 	//      가능 (e.g. /player/sync 와 동시). 한 SQL 안에서 pending 을 계산해 atomic 보장.
@@ -287,6 +300,10 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, err
 	}
 
+	// LOG-5: accrued = balance_after - balance_before + cost, recovering the passive
+	// accrual the atomic UPDATE folded in (its MAX(0,...) already clamped negative elapsed).
+	accrued := newBalance - balanceBefore + h.cfg.PullCost
+
 	// 3. RNG
 	result, err := h.pool.Roll()
 	if err != nil {
@@ -313,10 +330,12 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	// 7. Append gacha log
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO gacha_logs
-		    (id, player_id, item_id, rarity, is_duplicate, cost_points, refund_points, gacha_seed_hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		    (id, player_id, item_id, rarity, is_duplicate, cost_points, refund_points, gacha_seed_hash,
+		     balance_before, balance_after, accrued_pts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		uuid.New().String(), playerID, result.ItemID, string(result.Rarity),
 		isDuplicate, h.cfg.PullCost, refundPts, result.SeedHash,
+		balanceBefore, newBalance, accrued,
 	); err != nil {
 		return nil, err
 	}

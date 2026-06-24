@@ -166,12 +166,15 @@ func TestPray_WritesVowLog_Success(t *testing.T) {
 	var (
 		baseRarity, targetRarity, result, rewardItemID, rewardRarity, materials string
 		successRate, costPoints                                                 float64
+		balanceBefore, balanceAfter, accruedPts                                 float64
 		isDuplicate                                                             bool
 	)
 	if err := db.QueryRow(ctx,
-		`SELECT base_rarity, target_rarity, success_rate, cost_points, result, reward_item_id, reward_rarity, is_duplicate, materials
+		`SELECT base_rarity, target_rarity, success_rate, cost_points, result, reward_item_id, reward_rarity, is_duplicate, materials,
+		        balance_before, balance_after, accrued_pts
 		 FROM vow_logs WHERE player_id = ?`, "p1").Scan(
 		&baseRarity, &targetRarity, &successRate, &costPoints, &result, &rewardItemID, &rewardRarity, &isDuplicate, &materials,
+		&balanceBefore, &balanceAfter, &accruedPts,
 	); err != nil {
 		t.Fatalf("read vow_logs: %v", err)
 	}
@@ -195,6 +198,64 @@ func TestPray_WritesVowLog_Success(t *testing.T) {
 	}
 	if !strings.Contains(materials, "c_acc1") {
 		t.Errorf("materials JSON should contain c_acc1, got %q", materials)
+	}
+	// LOG-5: rate=0 seed → no passive accrual. balance_before is the seeded balance,
+	// balance_after is after the cost deduction, accrued is 0, and the audit identity holds.
+	if balanceBefore != 1_000_000 {
+		t.Errorf("balance_before: want 1000000, got %v", balanceBefore)
+	}
+	if balanceAfter != 1_000_000-28800 {
+		t.Errorf("balance_after: want %v, got %v", float64(1_000_000-28800), balanceAfter)
+	}
+	if accruedPts != 0 {
+		t.Errorf("accrued_pts: want 0 (rate=0), got %v", accruedPts)
+	}
+	if balanceAfter != balanceBefore+accruedPts-costPoints {
+		t.Errorf("audit identity broken: after=%v before=%v accrued=%v cost=%v",
+			balanceAfter, balanceBefore, accruedPts, costPoints)
+	}
+}
+
+// LOG-5: with a positive rate and a past last_sync_at, the audit log must record the
+// accrued passive points (accrued_pts > 0) while the before/after/accrued identity holds.
+func TestPray_WritesVowLog_AccruedRecorded(t *testing.T) {
+	h, db := newTestHandler(t, false)
+	ctx := context.Background()
+
+	if _, err := db.Exec(ctx, `INSERT INTO players (id, steam_id) VALUES (?, ?)`, "p1", "steam-p1"); err != nil {
+		t.Fatalf("seed player: %v", err)
+	}
+	// last_sync_at 1h in the past + rate 2/s → non-trivial accrual folded into the pray.
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(ctx,
+		`INSERT INTO player_states (player_id, enlightenment_pts, enlightenment_rate, last_sync_at) VALUES (?, ?, ?, ?)`,
+		"p1", 1_000_000.0, 2.0, past); err != nil {
+		t.Fatalf("seed player_state: %v", err)
+	}
+	seedInventory(t, db, "p1", "c_acc1", "common", 7)
+
+	w, _ := callPray(h, "p1", `{"materials":[{"item_id":"c_acc1","count":7}],"n_power":28800}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var balanceBefore, balanceAfter, accruedPts, costPoints float64
+	if err := db.QueryRow(ctx,
+		`SELECT balance_before, balance_after, accrued_pts, cost_points FROM vow_logs WHERE player_id = ?`, "p1").Scan(
+		&balanceBefore, &balanceAfter, &accruedPts, &costPoints,
+	); err != nil {
+		t.Fatalf("read vow_logs: %v", err)
+	}
+	if balanceBefore != 1_000_000 {
+		t.Errorf("balance_before: want 1000000 (pre-accrual snapshot), got %v", balanceBefore)
+	}
+	// Exact accrual depends on wall-clock elapsed, so assert strictly positive rather than pin it.
+	if accruedPts <= 0 {
+		t.Errorf("accrued_pts: want > 0 with rate>0 and a past last_sync_at, got %v", accruedPts)
+	}
+	if diff := balanceAfter - (balanceBefore + accruedPts - costPoints); diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("audit identity broken: after=%v before=%v accrued=%v cost=%v (diff=%v)",
+			balanceAfter, balanceBefore, accruedPts, costPoints, diff)
 	}
 }
 

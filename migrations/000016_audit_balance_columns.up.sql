@@ -1,0 +1,9 @@
+ALTER TABLE gacha_logs
+    ADD COLUMN balance_before NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    ADD COLUMN balance_after  NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    ADD COLUMN accrued_pts    NUMERIC(12, 2) NOT NULL DEFAULT 0;
+
+ALTER TABLE vow_logs
+    ADD COLUMN balance_before NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    ADD COLUMN balance_after  NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    ADD COLUMN accrued_pts    NUMERIC(12, 2) NOT NULL DEFAULT 0;

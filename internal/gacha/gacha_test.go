@@ -97,6 +97,14 @@ func rowBalanceAndSync(balance float64, lastSync time.Time) store.Row {
 	}}
 }
 
+// rowBalance mocks the LOG-5 balance_before SELECT (single REAL column).
+func rowBalance(balance float64) store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*float64)) = balance
+		return nil
+	}}
+}
+
 // rowTimeStrResult mocks an UPDATE ... RETURNING <ts column> response.
 // Drives a store.ScanTime scanner with an RFC3339 string.
 func rowTimeStrResult(t time.Time) store.Row {
@@ -376,6 +384,7 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowBalance(50), // LOG-5 balance_before SELECT
 			rowErrNoRows(), // atomic accrue+deduct returns no rows → InsufficientPoints
 		},
 		execQueue: []func() (store.Result, error){
@@ -435,6 +444,7 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowBalance(200),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
 			rowErrResult(dbErr),                // inventory UPSERT RETURNING — fails → rollback
 		},
@@ -465,6 +475,7 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowBalance(200),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1, acquired_at (new)
 		},
@@ -495,6 +506,7 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowBalance(500),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct → 500-100
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1 (new item)
 		},
@@ -748,6 +760,7 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowBalance(500),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct (refund 분기 없음)
 			rowGrantResult(3, time.Now()),      // inventory UPSERT RETURNING count=3 (2 → 3, duplicate)
 		},

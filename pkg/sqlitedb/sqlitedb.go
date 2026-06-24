@@ -52,7 +52,10 @@ CREATE TABLE IF NOT EXISTS gacha_logs (
     refund_points   REAL    NOT NULL DEFAULT 0,
     cost_points     REAL    NOT NULL DEFAULT 0,
     gacha_seed_hash TEXT    NOT NULL DEFAULT '',
-    pulled_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    pulled_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    balance_before  REAL    NOT NULL DEFAULT 0,
+    balance_after   REAL    NOT NULL DEFAULT 0,
+    accrued_pts     REAL    NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_gacha_logs_player_pulled_at
@@ -70,7 +73,10 @@ CREATE TABLE IF NOT EXISTS vow_logs (
     reward_rarity  TEXT NOT NULL,
     is_duplicate   INTEGER NOT NULL DEFAULT 0,
     materials      TEXT NOT NULL DEFAULT '',
-    prayed_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    prayed_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    balance_before REAL NOT NULL DEFAULT 0,
+    balance_after  REAL NOT NULL DEFAULT 0,
+    accrued_pts    REAL NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_vow_logs_player_prayed_at
@@ -194,6 +200,27 @@ func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			db.Close()
 			return nil, fmt.Errorf("add player_states.last_sync_at: %w", err)
+		}
+	}
+
+	// LOG-5 (migrations/000016): audit balance columns on reused DBs. gacha_logs / vow_logs
+	// gain balance_before / balance_after / accrued_pts so each economy write records the
+	// full before/after/accrued trail. Fresh DBs already have them via the schema const
+	// above, so these ALTERs just hit duplicate-column and are swallowed. SQLite rejects
+	// multiple ADD COLUMN per statement, so each column is its own statement.
+	for _, stmt := range []string{
+		"ALTER TABLE gacha_logs ADD COLUMN balance_before REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE gacha_logs ADD COLUMN balance_after  REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE gacha_logs ADD COLUMN accrued_pts    REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE vow_logs   ADD COLUMN balance_before REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE vow_logs   ADD COLUMN balance_after  REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE vow_logs   ADD COLUMN accrued_pts    REAL NOT NULL DEFAULT 0",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				db.Close()
+				return nil, fmt.Errorf("add audit balance column: %w", err)
+			}
 		}
 	}
 
