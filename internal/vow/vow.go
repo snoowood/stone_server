@@ -225,6 +225,18 @@ func (h *Handler) execPray(
 	if infinite {
 		cost = 0
 	}
+
+	// LOG-5: snapshot the pre-mutation balance for the vow_logs audit trail. Read-only —
+	// not used in the accrue/deduct math below. SQLite serializes writes (MaxOpenConns=1)
+	// so this is the authoritative balance just before the atomic UPDATE.
+	// (PG path, post R1(B): this read needs SELECT ... FOR UPDATE.)
+	var balanceBefore float64
+	if err := tx.QueryRow(ctx,
+		"SELECT enlightenment_pts FROM player_states WHERE player_id = ?", playerID,
+	).Scan(&balanceBefore); err != nil {
+		return nil, err
+	}
+
 	var newBalance float64
 	var lastSyncAt time.Time
 	err = tx.QueryRow(ctx, `
@@ -249,6 +261,10 @@ func (h *Handler) execPray(
 	if err != nil {
 		return nil, err
 	}
+
+	// LOG-5: accrued = balance_after - balance_before + cost, recovering the passive
+	// accrual the atomic UPDATE folded in. cost is the variable n_power (0 when infinite).
+	accrued := newBalance - balanceBefore + cost
 
 	// 2. 재료 소비 — 각 행 count -= n (count >= n 조건). 한 건이라도 미충족이면 rollback.
 	if !ignoreItems {
@@ -304,10 +320,12 @@ func (h *Handler) execPray(
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO vow_logs
 		    (id, player_id, base_rarity, target_rarity, success_rate, cost_points,
+		     balance_before, balance_after, accrued_pts,
 		     result, reward_item_id, reward_rarity, is_duplicate, materials)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		uuid.New().String(), playerID, string(baseRarity), string(targetRarity),
-		successRate, cost, result, rewardItemID, string(rewardRarity),
+		successRate, cost, balanceBefore, newBalance, accrued,
+		result, rewardItemID, string(rewardRarity),
 		grant.IsDuplicate, string(materialsJSON),
 	); err != nil {
 		return nil, err
