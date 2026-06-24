@@ -47,6 +47,13 @@ if [[ -z "$(env_value JWT_PRIVATE_KEY)" ]]; then
   echo "JWT_PRIVATE_KEY is required in the stone-server env secret." >&2
   exit 1
 fi
+# P0-3: prod 는 Postgres 경로다. 시크릿에 SQLITE_PATH 가 섞여 들어오면 앱이 조용히 SQLite
+# 모드로 빠져 PG 를 우회(데이터 분기)하므로 fail-loud 로 거부. compose 의 SQLITE_PATH:"" 가드와
+# 이중 방어(런타임 하드가드 + 배포 전 가시성).
+if [[ -n "$(env_value SQLITE_PATH)" ]]; then
+  echo "SQLITE_PATH must not be set in the prod env secret (forces SQLite mode, bypasses Postgres)." >&2
+  exit 1
+fi
 # APP_ENV 미설정 시 development 기본 — deploy/compose.yaml 의 ${APP_ENV:-development} 및
 # 현 단계 main=dev 와 일치. production 배포는 시크릿에 APP_ENV=production 을 명시해야
 # 이 Steam 키 프리플라이트가 발동한다.

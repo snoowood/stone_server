@@ -13,11 +13,26 @@ services:
       SERVER_PORT: 8080
       DB_URL: postgres://${DB_USER:-stone}:${DB_PASSWORD:?DB_PASSWORD is required}@stone-postgres:5432/${DB_NAME:-stone_server}?sslmode=disable
       REDIS_URL: redis://stone-redis:6379
+      # P0-3: prod 는 PG+Redis 경로(SQLITE_PATH 미설정 = PG 모드). runtime.env 시크릿에
+      # SQLITE_PATH 가 새어 들어와도 빈 값으로 덮어써 SQLite 모드(Postgres 우회) 전락을
+      # 차단한다(누출 방어, 현 동작 무변경).
+      SQLITE_PATH: ""
     depends_on:
       stone-postgres:
         condition: service_healthy
       stone-redis:
         condition: service_healthy
+    # SRE-6: 런타임 지속 헬스체크. /api/v1/health 는 db.Ping+kv.Ping 실패 시 503 → unhealthy 표시.
+    # alpine busybox wget 사용(이미지 내장, deploy-from-runner.sh 의 배포후 프로브와 동일 경로).
+    # compose 단독은 unhealthy 표시·depends_on 게이팅만 하고 자동재시작은 안 함(자동복구는 별도).
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # 부팅 시 마이그레이션+스킨풀+game-config 로드가 리스너 바인드보다 먼저라 콜드부팅
+      # 여유를 둔다(stone-postgres 와 동일 60s). 이 구간 실패는 unhealthy 로 안 침.
+      start_period: 60s
     networks:
       - stone-server-internal
       - snoowoo-public
