@@ -55,8 +55,11 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 	hash := ticketHash(req.Ticket)
 	claimed, err := claimTicket(ctx, h.kv, hash)
 	if err != nil {
+		// claimTicket 은 KV SetNX(쓰기) — 실패는 순수 인프라 장애(prod=Redis 도달불가)이지 인증
+		// 판정이 아니므로 500 대신 503+Retry-After 로 페이싱(SRE-5 를 인증 전구간으로 일관화, handoff §8).
 		log.Error().Err(err).Msg("auth: claim ticket")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable", "code": "SERVICE_UNAVAILABLE"})
 		return
 	}
 	if !claimed {
@@ -118,14 +121,16 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 			return
 		}
 		log.Error().Err(err).Msg("auth: enforce single session")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable", "code": "SERVICE_UNAVAILABLE"})
 		return
 	}
 
 	refreshToken := uuid.New().String()
 	if err := storeRefreshToken(ctx, h.kv, playerID, refreshToken); err != nil {
 		log.Error().Err(err).Msg("auth: store refresh token")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable", "code": "SERVICE_UNAVAILABLE"})
 		return
 	}
 
