@@ -206,21 +206,41 @@ func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 	// LOG-5 (migrations/000016): audit balance columns on reused DBs. gacha_logs / vow_logs
 	// gain balance_before / balance_after / accrued_pts so each economy write records the
 	// full before/after/accrued trail. Fresh DBs already have them via the schema const
-	// above, so these ALTERs just hit duplicate-column and are swallowed. SQLite rejects
-	// multiple ADD COLUMN per statement, so each column is its own statement.
-	for _, stmt := range []string{
-		"ALTER TABLE gacha_logs ADD COLUMN balance_before REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE gacha_logs ADD COLUMN balance_after  REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE gacha_logs ADD COLUMN accrued_pts    REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE vow_logs   ADD COLUMN balance_before REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE vow_logs   ADD COLUMN balance_after  REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE vow_logs   ADD COLUMN accrued_pts    REAL NOT NULL DEFAULT 0",
-	} {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				db.Close()
-				return nil, fmt.Errorf("add audit balance column: %w", err)
-			}
+	// above, so these ALTERs just hit duplicate-column and are swallowed.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE gacha_logs ADD COLUMN balance_before REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add gacha_logs.balance_before: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE gacha_logs ADD COLUMN balance_after REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add gacha_logs.balance_after: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE gacha_logs ADD COLUMN accrued_pts REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add gacha_logs.accrued_pts: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE vow_logs ADD COLUMN balance_before REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add vow_logs.balance_before: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE vow_logs ADD COLUMN balance_after REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add vow_logs.balance_after: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE vow_logs ADD COLUMN accrued_pts REAL NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add vow_logs.accrued_pts: %w", err)
 		}
 	}
 
