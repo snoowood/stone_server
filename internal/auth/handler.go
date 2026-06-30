@@ -161,15 +161,24 @@ func upsertPlayer(ctx context.Context, db store.DB, steamID string) (string, err
 }
 
 func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, playerID string) error {
-	// E2E-3: anchor last_sync_at = now at creation. With a NULL last_sync_at the
-	// passive-accrual formula MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0,
-	// so a brand-new account accrues nothing and its first gacha (which fires before
-	// the first /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
-	// accrual start from t0. ON CONFLICT DO NOTHING keeps re-login a no-op (existing
-	// rows untouched). Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
+	// E2E-3 + ECON-3: anchor last_sync_at = now on every session start.
+	//   - New row (E2E-3): with a NULL last_sync_at the passive-accrual formula
+	//     MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0, so a brand-new
+	//     account accrues nothing and its first gacha (which fires before the first
+	//     /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
+	//     accrual start from t0.
+	//   - Existing row, re-login (ECON-3): ON CONFLICT DO UPDATE resets last_sync_at
+	//     = now so the closed-app (offline) window is NOT accrued. enlightenment_pts
+	//     is left untouched — the offline gap is dropped, not credited. Online idle
+	//     still accrues via the in-session /player/sync (5min loop).
+	// Reached only from session-start paths (AuthSteam/AuthDev/DevToken); /auth/refresh
+	// does NOT call this, so a mid-session token refresh never drops online accrual.
+	// Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
 	const q = `INSERT INTO player_states (player_id, last_sync_at)
 	           VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-	           ON CONFLICT (player_id) DO NOTHING`
+	           ON CONFLICT (player_id) DO UPDATE SET
+	               last_sync_at = excluded.last_sync_at,
+	               updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`
 	if _, err := db.Exec(ctx, q, playerID); err != nil {
 		return err
 	}
