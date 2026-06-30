@@ -126,19 +126,20 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 		return
 	}
 
-	// ECON-3: session won — re-anchor the accrual clock so the offline gap is dropped.
-	// Placed after enforceSingleSession so a rejected re-login leaves the anchor intact.
-	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
-		log.Error().Err(err).Str("player_id", playerID).Msg("auth: reset accrual anchor")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
-		return
-	}
-
 	refreshToken := uuid.New().String()
 	if err := storeRefreshToken(ctx, h.kv, playerID, refreshToken); err != nil {
 		log.Error().Err(err).Msg("auth: store refresh token")
 		c.Header("Retry-After", "5")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable", "code": "SERVICE_UNAVAILABLE"})
+		return
+	}
+
+	// ECON-3: session fully established — re-anchor the accrual clock so the offline
+	// gap is dropped. Done last so a login rejected/failed at any earlier step never
+	// moves an existing active session's anchor (see resetAccrualAnchor).
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		log.Error().Err(err).Str("player_id", playerID).Msg("auth: reset accrual anchor")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
 
@@ -194,10 +195,17 @@ func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, pl
 // balance (enlightenment_pts) is left untouched — the offline gap is discarded, not
 // credited; online idle keeps accruing via the in-session /player/sync (5min) loop.
 //
-// Must be called only AFTER enforceSingleSession succeeds. A rejected re-login
-// (LOGIN_IN_PROGRESS) or a login that fails earlier never reaches this, so it cannot
-// move the anchor of an already-active session. /auth/refresh deliberately does not
-// call this — a mid-session token refresh must not drop online accrual.
+// Call it LAST, only once the session is fully established (enforceSingleSession +
+// storeRefreshToken both succeeded). A login rejected (LOGIN_IN_PROGRESS) or failing
+// at any earlier step never reaches this, so it cannot move the anchor of an
+// already-active session. /auth/refresh deliberately does not call this — a
+// mid-session token refresh must not drop online accrual.
+//
+// Tradeoff: a *successful* re-login that evicts a live session (e.g. device takeover)
+// does re-anchor, dropping up to one /player/sync interval (~5min) of that session's
+// online idle accrual. Accepted under ECON-3 — the server cannot distinguish a
+// recently-synced online player from a returning offline one; both present a stale
+// last_sync_at, and reset folds in no accrual before overwriting the clock.
 func resetAccrualAnchor(ctx context.Context, db store.DB, playerID string) error {
 	const q = `UPDATE player_states
 	              SET last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),

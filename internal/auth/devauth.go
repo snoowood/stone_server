@@ -68,17 +68,16 @@ func (h *Handler) AuthDev(c *gin.Context) {
 		return
 	}
 
-	// ECON-3: session won — re-anchor the accrual clock (after enforceSingleSession
-	// so a rejected re-login leaves the anchor intact).
-	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
-		log.Error().Err(err).Str("player_id", playerID).Msg("auth/dev: reset accrual anchor")
+	refreshToken := uuid.New().String()
+	if err := storeRefreshToken(ctx, h.kv, playerID, refreshToken); err != nil {
+		log.Error().Err(err).Msg("auth/dev: store refresh token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
 
-	refreshToken := uuid.New().String()
-	if err := storeRefreshToken(ctx, h.kv, playerID, refreshToken); err != nil {
-		log.Error().Err(err).Msg("auth/dev: store refresh token")
+	// ECON-3: session fully established — re-anchor last (see resetAccrualAnchor).
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		log.Error().Err(err).Str("player_id", playerID).Msg("auth/dev: reset accrual anchor")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
