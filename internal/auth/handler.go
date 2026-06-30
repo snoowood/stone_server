@@ -134,6 +134,15 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 		return
 	}
 
+	// ECON-3: session fully established — re-anchor the accrual clock so the offline
+	// gap is dropped. Done last so a login rejected/failed at any earlier step never
+	// moves an existing active session's anchor (see resetAccrualAnchor).
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		log.Error().Err(err).Str("player_id", playerID).Msg("auth: reset accrual anchor")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+
 	success = true
 
 	c.JSON(http.StatusOK, authResponse{
@@ -165,8 +174,11 @@ func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, pl
 	// passive-accrual formula MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0,
 	// so a brand-new account accrues nothing and its first gacha (which fires before
 	// the first /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
-	// accrual start from t0. ON CONFLICT DO NOTHING keeps re-login a no-op (existing
-	// rows untouched). Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
+	// accrual start from t0. ON CONFLICT DO NOTHING keeps this a pure idempotent row
+	// create — it must NOT move an existing anchor. The ECON-3 re-login reset of
+	// last_sync_at is applied separately by resetAccrualAnchor, only AFTER the session
+	// is established, so a rejected/failed re-login cannot mutate an active session's
+	// anchor. Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
 	const q = `INSERT INTO player_states (player_id, last_sync_at)
 	           VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 	           ON CONFLICT (player_id) DO NOTHING`
@@ -176,6 +188,31 @@ func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, pl
 	// M2: 신규 플레이어용 WishCairn 슬롯도 같이 초기화 (phase_offset 으로 시차 부여).
 	// ON CONFLICT DO NOTHING 이라 재로그인 시에는 no-op.
 	return cairnCfg.InitializeSlots(ctx, db, playerID, time.Now())
+}
+
+// resetAccrualAnchor implements ECON-3: on session start it re-anchors last_sync_at
+// = now so the closed-app (offline) window is dropped from passive accrual. The
+// balance (enlightenment_pts) is left untouched — the offline gap is discarded, not
+// credited; online idle keeps accruing via the in-session /player/sync (5min) loop.
+//
+// Call it LAST, only once the session is fully established (enforceSingleSession +
+// storeRefreshToken both succeeded). A login rejected (LOGIN_IN_PROGRESS) or failing
+// at any earlier step never reaches this, so it cannot move the anchor of an
+// already-active session. /auth/refresh deliberately does not call this — a
+// mid-session token refresh must not drop online accrual.
+//
+// Tradeoff: a *successful* re-login that evicts a live session (e.g. device takeover)
+// does re-anchor, dropping up to one /player/sync interval (~5min) of that session's
+// online idle accrual. Accepted under ECON-3 — the server cannot distinguish a
+// recently-synced online player from a returning offline one; both present a stale
+// last_sync_at, and reset folds in no accrual before overwriting the clock.
+func resetAccrualAnchor(ctx context.Context, db store.DB, playerID string) error {
+	const q = `UPDATE player_states
+	              SET last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+	                  updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	            WHERE player_id = ?`
+	_, err := db.Exec(ctx, q, playerID)
+	return err
 }
 
 // updateLoginStreak applies daily-streak rules atomically based on UTC date:

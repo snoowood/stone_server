@@ -48,6 +48,12 @@ func (h *Handler) DevToken(c *gin.Context) {
 		return
 	}
 
+	// ECON-3: re-anchor the accrual clock after the session is fully established.
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
 	c.JSON(http.StatusOK, authResponse{
 		JWT:          tokenStr,
 		RefreshToken: refreshToken,

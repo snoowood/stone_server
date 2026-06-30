@@ -75,6 +75,13 @@ func (h *Handler) AuthDev(c *gin.Context) {
 		return
 	}
 
+	// ECON-3: session fully established — re-anchor last (see resetAccrualAnchor).
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		log.Error().Err(err).Str("player_id", playerID).Msg("auth/dev: reset accrual anchor")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+
 	c.JSON(http.StatusOK, authResponse{
 		JWT:          tokenStr,
 		RefreshToken: refreshToken,
