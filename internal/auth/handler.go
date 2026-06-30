@@ -126,6 +126,14 @@ func (h *Handler) AuthSteam(c *gin.Context) {
 		return
 	}
 
+	// ECON-3: session won — re-anchor the accrual clock so the offline gap is dropped.
+	// Placed after enforceSingleSession so a rejected re-login leaves the anchor intact.
+	if err := resetAccrualAnchor(ctx, h.db, playerID); err != nil {
+		log.Error().Err(err).Str("player_id", playerID).Msg("auth: reset accrual anchor")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+
 	refreshToken := uuid.New().String()
 	if err := storeRefreshToken(ctx, h.kv, playerID, refreshToken); err != nil {
 		log.Error().Err(err).Msg("auth: store refresh token")
@@ -161,30 +169,42 @@ func upsertPlayer(ctx context.Context, db store.DB, steamID string) (string, err
 }
 
 func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, playerID string) error {
-	// E2E-3 + ECON-3: anchor last_sync_at = now on every session start.
-	//   - New row (E2E-3): with a NULL last_sync_at the passive-accrual formula
-	//     MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0, so a brand-new
-	//     account accrues nothing and its first gacha (which fires before the first
-	//     /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
-	//     accrual start from t0.
-	//   - Existing row, re-login (ECON-3): ON CONFLICT DO UPDATE resets last_sync_at
-	//     = now so the closed-app (offline) window is NOT accrued. enlightenment_pts
-	//     is left untouched — the offline gap is dropped, not credited. Online idle
-	//     still accrues via the in-session /player/sync (5min loop).
-	// Reached only from session-start paths (AuthSteam/AuthDev/DevToken); /auth/refresh
-	// does NOT call this, so a mid-session token refresh never drops online accrual.
-	// Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
+	// E2E-3: anchor last_sync_at = now at creation. With a NULL last_sync_at the
+	// passive-accrual formula MAX(0, COALESCE(now - last_sync_at, 0) * rate) yields 0,
+	// so a brand-new account accrues nothing and its first gacha (which fires before
+	// the first /player/sync) hits 409 INSUFFICIENT_POINTS. Anchoring at creation lets
+	// accrual start from t0. ON CONFLICT DO NOTHING keeps this a pure idempotent row
+	// create — it must NOT move an existing anchor. The ECON-3 re-login reset of
+	// last_sync_at is applied separately by resetAccrualAnchor, only AFTER the session
+	// is established, so a rejected/failed re-login cannot mutate an active session's
+	// anchor. Format matches upsertPlayer/gacha so strftime('%s', …) parses it.
 	const q = `INSERT INTO player_states (player_id, last_sync_at)
 	           VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-	           ON CONFLICT (player_id) DO UPDATE SET
-	               last_sync_at = excluded.last_sync_at,
-	               updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`
+	           ON CONFLICT (player_id) DO NOTHING`
 	if _, err := db.Exec(ctx, q, playerID); err != nil {
 		return err
 	}
 	// M2: 신규 플레이어용 WishCairn 슬롯도 같이 초기화 (phase_offset 으로 시차 부여).
 	// ON CONFLICT DO NOTHING 이라 재로그인 시에는 no-op.
 	return cairnCfg.InitializeSlots(ctx, db, playerID, time.Now())
+}
+
+// resetAccrualAnchor implements ECON-3: on session start it re-anchors last_sync_at
+// = now so the closed-app (offline) window is dropped from passive accrual. The
+// balance (enlightenment_pts) is left untouched — the offline gap is discarded, not
+// credited; online idle keeps accruing via the in-session /player/sync (5min) loop.
+//
+// Must be called only AFTER enforceSingleSession succeeds. A rejected re-login
+// (LOGIN_IN_PROGRESS) or a login that fails earlier never reaches this, so it cannot
+// move the anchor of an already-active session. /auth/refresh deliberately does not
+// call this — a mid-session token refresh must not drop online accrual.
+func resetAccrualAnchor(ctx context.Context, db store.DB, playerID string) error {
+	const q = `UPDATE player_states
+	              SET last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+	                  updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	            WHERE player_id = ?`
+	_, err := db.Exec(ctx, q, playerID)
+	return err
 }
 
 // updateLoginStreak applies daily-streak rules atomically based on UTC date:
