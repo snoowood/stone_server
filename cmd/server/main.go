@@ -19,6 +19,7 @@ import (
 	"github.com/gensdeis/stone-server/internal/achievement"
 	"github.com/gensdeis/stone-server/internal/auth"
 	"github.com/gensdeis/stone-server/internal/cairn"
+	"github.com/gensdeis/stone-server/internal/diag"
 	"github.com/gensdeis/stone-server/internal/gacha"
 	"github.com/gensdeis/stone-server/internal/health"
 	"github.com/gensdeis/stone-server/internal/middleware"
@@ -245,12 +246,13 @@ func main() {
 		// (config.validate)가 비정규값 부팅을 차단하므로, dev 활성은 명시적 development 에서만 발생.
 		log.Warn().
 			Str("app_env", cfg.AppEnv).
-			Msg("DEV ENDPOINTS ACTIVE — /auth/dev, /internal/dev-token, mock Steam enabled. MUST NOT run in production.")
+			Msg("DEV ENDPOINTS ACTIVE — /auth/dev, /internal/dev-token, /internal/diag/economy, mock Steam enabled. MUST NOT run in production.")
 
 		public.POST("/auth/dev", authHandler.AuthDev)
 
 		internal := v1.Group("/internal")
 		internal.GET("/dev-token", authHandler.DevToken)
+		internal.GET("/diag/economy", diag.EconomyHandler(sdb))
 	}
 
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
