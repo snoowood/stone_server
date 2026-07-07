@@ -353,6 +353,38 @@ func TestApplyGrowth_IncompleteExhaustion_NoOverCap(t *testing.T) {
 	}
 }
 
+// (g) 미/부분 초기화 슬롯: SlotCount 미만이면 성장을 보류하고 앵커도 전진하지 않는다.
+// 앵커만 전진하면 그 구간의 성장이 조용히 소실된다(codex 리뷰 지적) — 슬롯 보강(lazy-init)
+// 후 같은 윈도우가 동일 시드로 재적립되어야 한다.
+func TestApplyGrowth_PartialSlots_DefersWithoutAnchorAdvance(t *testing.T) {
+	interval := time.Duration(Default.SpawnIntervalSeconds) * time.Second
+	for _, tc := range []struct {
+		name   string
+		layers []int // len < SlotCount
+	}{
+		{"no-slots", nil},
+		{"partial-slots", []int{0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newGrowthDB(t)
+			now := time.Now().UTC().Truncate(time.Second)
+			anchor := now.Add(-3 * interval).Format(time.RFC3339)
+			seedGrowth(t, db, "p", tc.layers, anchor)
+
+			if err := Default.ApplyGrowthTx(context.Background(), db, "p", now); err != nil {
+				t.Fatalf("ApplyGrowth: %v", err)
+			}
+			if got := sumLayers(readLayers(t, db, "p")); got != 0 {
+				t.Errorf("deferred growth must not distribute, got sum %d", got)
+			}
+			gotAnchor, _ := readAnchor(t, db, "p")
+			if gotAnchor != anchor {
+				t.Errorf("anchor = %q, want %q (must NOT advance — window would be silently lost)", gotAnchor, anchor)
+			}
+		})
+	}
+}
+
 // (e-live) 실 DB 동시성: 같은 (player, now) 로 동시에 ApplyGrowthTx 를 불러도 정확히
 // steps 층만 증가해야 한다. MaxOpenConns=1 직렬화 + 앵커 CAS 게이트(승자만 슬롯 기록)의
 // 실체 검증 — fake 기반 CAS 패자 테스트(TestApplyGrowth_CASLoser_NoSlotWrite)의 통합판.

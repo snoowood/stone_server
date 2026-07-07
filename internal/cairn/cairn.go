@@ -229,6 +229,15 @@ func (c Config) ApplyGrowth(ctx context.Context, exec growthExecutor, playerID s
 	}
 	rows.Close()
 
+	// ④b 슬롯이 아직 SlotCount 만큼 초기화되지 않았으면(미/부분 초기화 — GetState 의
+	//    lazy-init 전에 sync 가 먼저 온 경우 등) 성장을 보류한다. 여기서 앵커를 전진시키면
+	//    배분 대상이 없어 그 구간의 성장이 조용히 소실되므로, 앵커를 건드리지 않고 종료해
+	//    슬롯 보강 후 같은 윈도우가 동일 시드로 재적립되게 한다 (codex 리뷰 지적).
+	//    전 슬롯 완성(아래 incomplete 소진)과는 다른 상태다 — 그쪽은 앵커를 전진시켜야 한다.
+	if len(slots) < c.SlotCount {
+		return nil
+	}
+
 	// ⑤ step i(1..steps)마다 미완성 슬롯(slot_index 오름차순) 중 결정적 무작위 1곳을 +1.
 	//    미완성이 비면(전 슬롯 완성) 배분을 중단한다 — 그래도 앵커는 아래 ⑥에서 steps 만큼
 	//    전진한다(성장 뱅킹 금지). applied[j] 는 slots[j] 에 최종적으로 더할 층수.

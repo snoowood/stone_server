@@ -30,8 +30,11 @@ func newSQLiteHandler(t *testing.T) (*Handler, store.DB) {
 }
 
 // seedCairnPull seeds an affordable player with cairn_last_growth_at=now (steps=0, so the
-// in-tx ApplyGrowth is a no-op and pull sees exactly the seeded layer_count) plus one
-// cairn slot at the given layer_count. next_gacha_at is left NULL (no cooldown).
+// in-tx ApplyGrowth is a no-op and pull sees exactly the seeded layer_count) plus a FULL
+// slot set: the target slot at the given layer_count, every other slot complete
+// (MaxLayers). 전체 세트인 이유 — ApplyGrowth 는 SlotCount 미만이면 성장을 보류하고,
+// 나머지를 완성 상태로 두면 미완성이 타깃 하나뿐이라 성장 배분이 시드와 무관하게
+// 결정적이다. next_gacha_at is left NULL (no cooldown).
 func seedCairnPull(t *testing.T, db store.DB, playerID string, slotIndex, layerCount int) {
 	t.Helper()
 	ctx := context.Background()
@@ -45,10 +48,16 @@ func seedCairnPull(t *testing.T, db store.DB, playerID string, slotIndex, layerC
 		playerID, nowStr, nowStr); err != nil {
 		t.Fatalf("seed player_state: %v", err)
 	}
-	if _, err := db.Exec(ctx,
-		`INSERT INTO wish_cairn_slots (player_id, slot_index, started_at, layer_count) VALUES (?, ?, ?, ?)`,
-		playerID, slotIndex, nowStr, layerCount); err != nil {
-		t.Fatalf("seed slot: %v", err)
+	for i := 0; i < cairn.Default.SlotCount; i++ {
+		layer := cairn.Default.MaxLayers
+		if i == slotIndex {
+			layer = layerCount
+		}
+		if _, err := db.Exec(ctx,
+			`INSERT INTO wish_cairn_slots (player_id, slot_index, started_at, layer_count) VALUES (?, ?, ?, ?)`,
+			playerID, i, nowStr, layer); err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
 	}
 }
 

@@ -232,6 +232,26 @@ func TestGetState_AppliesCairnGrowthOnce(t *testing.T) {
 	}
 }
 
+// issue #34: Sync 의 성장은 best-effort — 성장 적용이 실패해도(여기선 파싱 불가 앵커)
+// 이미 커밋된 적립을 뒤집지 않고 200 + sync 응답을 유지해야 한다(다음 요청에서 재시도).
+func TestSync_GrowthFailure_StillReturns200(t *testing.T) {
+	h, db := newTestHandler(t)
+	seedPlayerState(t, db, "p1", 100.0, 1.0, time.Now())
+	seedCairn(t, db, "p1", time.Now())
+	if _, err := db.Exec(context.Background(),
+		`UPDATE player_states SET cairn_last_growth_at = 'not-a-timestamp' WHERE player_id = 'p1'`); err != nil {
+		t.Fatalf("corrupt anchor: %v", err)
+	}
+
+	w, resp := callSync(h, "p1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("growth failure must not fail sync (best-effort): want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if resp.EnlightenmentPts < 100.0 {
+		t.Errorf("sync response must still carry the committed accrual, got %v", resp.EnlightenmentPts)
+	}
+}
+
 // issue #34: Sync 도 성장을 적립한다(응답엔 cairn 이 없으므로 DB 로 확인).
 func TestSync_AppliesCairnGrowth(t *testing.T) {
 	h, db := newTestHandler(t)
