@@ -171,3 +171,79 @@ func TestGetState_InventoryExposesGrantMeta(t *testing.T) {
 		t.Errorf("want count 2, got %d", it.Count)
 	}
 }
+
+// seedCairn seeds SlotCount slots (all layer_count 0) and sets cairn_last_growth_at
+// for a player that already has a player_states row.
+func seedCairn(t *testing.T, db store.DB, playerID string, anchor time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	nowStr := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	for i := 0; i < cairn.Default.SlotCount; i++ {
+		if _, err := db.Exec(ctx,
+			`INSERT INTO wish_cairn_slots (player_id, slot_index, started_at, layer_count) VALUES (?, ?, ?, 0)`,
+			playerID, i, nowStr); err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
+	}
+	if _, err := db.Exec(ctx,
+		`UPDATE player_states SET cairn_last_growth_at = ? WHERE player_id = ?`,
+		anchor.UTC().Truncate(time.Second).Format(time.RFC3339), playerID); err != nil {
+		t.Fatalf("seed cairn anchor: %v", err)
+	}
+}
+
+func cairnLayerSum(t *testing.T, db store.DB, playerID string) int {
+	t.Helper()
+	var sum int
+	if err := db.QueryRow(context.Background(),
+		`SELECT COALESCE(SUM(layer_count), 0) FROM wish_cairn_slots WHERE player_id = ?`, playerID).Scan(&sum); err != nil {
+		t.Fatalf("sum layers: %v", err)
+	}
+	return sum
+}
+
+// issue #34: GetState 응답이 저장형 성장(anchor→now)을 반영하고, 연속 호출 시 이중 성장이
+// 없어야 한다(앵커가 전진했으므로 두 번째 호출은 steps=0).
+func TestGetState_AppliesCairnGrowthOnce(t *testing.T) {
+	h, db := newTestHandler(t)
+	seedPlayerState(t, db, "p1", 10.0, 1.0, time.Now())
+	interval := time.Duration(cairn.Default.SpawnIntervalSeconds) * time.Second
+	seedCairn(t, db, "p1", time.Now().Add(-3*interval)) // 3 steps pending
+
+	w, resp := callGetState(h, "p1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got := 0
+	for _, s := range resp.Cairn.Slots {
+		got += s.LayerCount
+	}
+	if got != 3 {
+		t.Fatalf("GetState should reflect 3 grown layers, got %d (%+v)", got, resp.Cairn.Slots)
+	}
+
+	_, resp2 := callGetState(h, "p1")
+	got2 := 0
+	for _, s := range resp2.Cairn.Slots {
+		got2 += s.LayerCount
+	}
+	if got2 != got {
+		t.Errorf("consecutive GetState double-grew: %d → %d", got, got2)
+	}
+}
+
+// issue #34: Sync 도 성장을 적립한다(응답엔 cairn 이 없으므로 DB 로 확인).
+func TestSync_AppliesCairnGrowth(t *testing.T) {
+	h, db := newTestHandler(t)
+	seedPlayerState(t, db, "p1", 10.0, 1.0, time.Now())
+	interval := time.Duration(cairn.Default.SpawnIntervalSeconds) * time.Second
+	seedCairn(t, db, "p1", time.Now().Add(-2*interval)) // 2 steps pending
+
+	w, _ := callSync(h, "p1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := cairnLayerSum(t, db, "p1"); got != 2 {
+		t.Errorf("Sync should apply 2 grown layers, got %d", got)
+	}
+}

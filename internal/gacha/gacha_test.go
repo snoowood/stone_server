@@ -116,6 +116,16 @@ func rowTimeStrResult(t time.Time) store.Row {
 	}}
 }
 
+// rowAnchorNow mocks ApplyGrowth's cairn_last_growth_at read returning ~now. With the
+// anchor at now, steps=0 so growth is a no-op inside the pull tx — it consumes exactly
+// one QueryRow (this one) and zero Exec, keeping the execQueue expectations stable.
+func rowAnchorNow() store.Row {
+	return &mockRow{scanFn: func(dest ...any) error {
+		*(dest[0].(*sql.NullString)) = sql.NullString{String: time.Now().UTC().Format(time.RFC3339), Valid: true}
+		return nil
+	}}
+}
+
 // mockResult implements store.Result.
 type mockResult struct {
 	affected int64
@@ -303,17 +313,18 @@ func TestPull_OutOfRangeSlotIndex_BadRequest(t *testing.T) {
 }
 
 // M4: 슬롯이 complete 가 아닐 때 → 403 CAIRN_INCOMPLETE.
-// 새 흐름: CAS UPDATE 가 affected=0 → LoadSlotStartedAt 로 존재 확인 → INCOMPLETE.
+// 새 흐름: CAS UPDATE 가 affected=0 → LoadSlotLayerCount 로 존재 확인 → INCOMPLETE.
 func TestPull_CairnIncomplete_Forbidden(t *testing.T) {
 	kv := kvstore.NewMemStore()
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowTimeStrResult(time.Now().UTC()), // LoadSlotStartedAt: slot 존재, 최근 시작 (incomplete)
+			rowAnchorNow(),  // ApplyGrowth 앵커 읽기 → steps=0 no-op
+			rowIntResult(2), // LoadSlotLayerCount: slot 존재, layer 2 < Max (incomplete)
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // 0a 쿨다운 게이트 통과
-			okExec(0), // CAS slot reset: affected=0 (incomplete 라 조건 미달)
+			okExec(0), // CAS slot reset: affected=0 (incomplete 라 layer_count < Max)
 		},
 	}
 	db := &mockDB{tx: tx}
@@ -337,7 +348,8 @@ func TestPull_CairnSlotNotFound_NotFound(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
-			rowErrResult(sql.ErrNoRows), // LoadSlotStartedAt: 슬롯 자체가 없음
+			rowAnchorNow(),              // ApplyGrowth 앵커 읽기 → steps=0 no-op
+			rowErrResult(sql.ErrNoRows), // LoadSlotLayerCount: 슬롯 자체가 없음
 		},
 		execQueue: []func() (store.Result, error){
 			okExec(1), // 0a 쿨다운 게이트 통과
@@ -384,6 +396,7 @@ func TestExecPull_InsufficientPoints(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowAnchorNow(), // ApplyGrowth 앵커 읽기 → steps=0 no-op
 			rowBalance(50), // LOG-5 balance_before SELECT
 			rowErrNoRows(), // atomic accrue+deduct returns no rows → InsufficientPoints
 		},
@@ -444,6 +457,7 @@ func TestExecPull_RollbackOnInventoryError(t *testing.T) {
 	dbErr := errors.New("db: inventory upsert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowAnchorNow(),                     // ApplyGrowth 앵커 읽기 → steps=0 no-op
 			rowBalance(200),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
 			rowErrResult(dbErr),                // inventory UPSERT RETURNING — fails → rollback
@@ -475,6 +489,7 @@ func TestExecPull_RollbackOnLogError(t *testing.T) {
 	dbErr := errors.New("db: gacha_logs insert failed")
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowAnchorNow(),                     // ApplyGrowth 앵커 읽기 → steps=0 no-op
 			rowBalance(200),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(100, time.Now()), // atomic accrue+deduct
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1, acquired_at (new)
@@ -506,6 +521,7 @@ func TestExecPull_NewItem_Committed(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowAnchorNow(),                     // ApplyGrowth 앵커 읽기 → steps=0 no-op
 			rowBalance(500),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct → 500-100
 			rowGrantResult(1, time.Now()),      // inventory UPSERT RETURNING count=1 (new item)
@@ -760,6 +776,7 @@ func TestExecPull_DuplicateItem_StackIncreases(t *testing.T) {
 
 	tx := &mockTx{
 		queryRowQueue: []store.Row{
+			rowAnchorNow(),                     // ApplyGrowth 앵커 읽기 → steps=0 no-op
 			rowBalance(500),                    // LOG-5 balance_before SELECT
 			rowBalanceAndSync(400, time.Now()), // atomic accrue+deduct (refund 분기 없음)
 			rowGrantResult(3, time.Now()),      // inventory UPSERT RETURNING count=3 (2 → 3, duplicate)

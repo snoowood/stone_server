@@ -113,6 +113,66 @@ func TestNew_MirrorsMigration0009OnReusedDB(t *testing.T) {
 	}
 }
 
+// TestNew_MirrorsMigration0017OnReusedDB simulates a reused DB predating migrations/000017
+// (wish_cairn_slots without layer_count, player_states without cairn_last_growth_at). New
+// must add BOTH columns without failing on "no such column", so the issue #34 stored-layer
+// model works on legacy SQLite DBs.
+func TestNew_MirrorsMigration0017OnReusedDB(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy17.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// pre-000017 shapes.
+	if _, err := raw.ExecContext(ctx,
+		`CREATE TABLE wish_cairn_slots (player_id TEXT NOT NULL, slot_index INTEGER NOT NULL, started_at TEXT NOT NULL, claimed_at TEXT, PRIMARY KEY (player_id, slot_index))`); err != nil {
+		t.Fatalf("create legacy wish_cairn_slots: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx,
+		`CREATE TABLE player_states (player_id TEXT PRIMARY KEY, enlightenment_pts REAL NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatalf("create legacy player_states: %v", err)
+	}
+	raw.Close()
+
+	db, err := New(path, 5, 30)
+	if err != nil {
+		t.Fatalf("New on reused legacy DB (000017 column-add must not fail): %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `INSERT INTO players (id, steam_id) VALUES ('p1', 's1')`); err != nil {
+		t.Fatalf("insert player: %v", err)
+	}
+	// layer_count column must exist with DEFAULT 0.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO wish_cairn_slots (player_id, slot_index, started_at) VALUES ('p1', 0, strftime('%Y-%m-%dT%H:%M:%SZ','now'))`); err != nil {
+		t.Fatalf("insert slot (layer_count column must exist): %v", err)
+	}
+	var layer int
+	if err := db.QueryRowContext(ctx,
+		`SELECT layer_count FROM wish_cairn_slots WHERE player_id='p1' AND slot_index=0`).Scan(&layer); err != nil {
+		t.Fatalf("select layer_count (column must be added): %v", err)
+	}
+	if layer != 0 {
+		t.Errorf("layer_count default = %d, want 0", layer)
+	}
+	// cairn_last_growth_at column must exist (nullable).
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO player_states (player_id, cairn_last_growth_at) VALUES ('p1', strftime('%Y-%m-%dT%H:%M:%SZ','now'))`); err != nil {
+		t.Fatalf("insert player_state (cairn_last_growth_at column must exist): %v", err)
+	}
+	var nonNull int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM player_states WHERE player_id='p1' AND cairn_last_growth_at IS NOT NULL`).Scan(&nonNull); err != nil {
+		t.Fatalf("select cairn_last_growth_at: %v", err)
+	}
+	if nonNull != 1 {
+		t.Errorf("cairn_last_growth_at must be writable, got non-null count %d", nonNull)
+	}
+}
+
 // startedAts returns each slot's started_at ordered by slot_index.
 func startedAts(t *testing.T, db *sql.DB, playerID string) []time.Time {
 	t.Helper()

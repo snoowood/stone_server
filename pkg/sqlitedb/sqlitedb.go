@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS player_states (
     next_gacha_at     TEXT,
     enlightenment_rate REAL   NOT NULL DEFAULT 1.0,
     last_sync_at      TEXT,
+    cairn_last_growth_at TEXT,
     updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
@@ -94,10 +95,11 @@ CREATE INDEX IF NOT EXISTS idx_player_achievements_player
     ON player_achievements(player_id);
 
 CREATE TABLE IF NOT EXISTS wish_cairn_slots (
-    player_id  TEXT NOT NULL REFERENCES players(id),
-    slot_index INTEGER NOT NULL,
-    started_at TEXT NOT NULL,
-    claimed_at TEXT,
+    player_id   TEXT NOT NULL REFERENCES players(id),
+    slot_index  INTEGER NOT NULL,
+    started_at  TEXT NOT NULL,
+    claimed_at  TEXT,
+    layer_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, slot_index)
 );
 
@@ -241,6 +243,23 @@ func New(path string, slotCount, phaseOffsetSeconds int) (*sql.DB, error) {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			db.Close()
 			return nil, fmt.Errorf("add vow_logs.accrued_pts: %w", err)
+		}
+	}
+
+	// issue #34 (migrations/000017): WishCairn 저장형 층수 전환. wish_cairn_slots.layer_count
+	// (실제 저장) + player_states.cairn_last_growth_at (성장 앵커) 를 reused DB 에 보강한다.
+	// 마이그레이션과 동일 순서(layer_count 먼저). Fresh DB 는 위 schema const 에 이미 포함 —
+	// duplicate-column 만 swallow. 전원 리셋 정책: 백필 없이 DEFAULT 0 으로 시작.
+	if _, err := db.ExecContext(ctx, "ALTER TABLE wish_cairn_slots ADD COLUMN layer_count INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add wish_cairn_slots.layer_count: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE player_states ADD COLUMN cairn_last_growth_at TEXT"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("add player_states.cairn_last_growth_at: %w", err)
 		}
 	}
 

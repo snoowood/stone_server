@@ -34,8 +34,9 @@ type inventoryItem struct {
 }
 
 // cairnStateResponse mirrors the server-authoritative WishCairn state.
-// SlotCount / MaxLayers / SpawnIntervalSec 는 클라가 표시 외삽에 쓰는 게임 상수.
-// Slots 는 매 read 시 (now - started_at) / interval 로 derive 된 슬롯 배열.
+// SlotCount / MaxLayers / SpawnIntervalSec 는 클라 표시용 게임 상수. issue #34 저장형 전환
+// 후 SpawnIntervalSec 의미가 "슬롯당 성장 간격"→"전역 랜덤 스텝당 간격"(interval 마다 미완성
+// 슬롯 중 무작위 1곳 +1)으로 바뀌었다. Slots 는 서버가 저장한 layer_count 스냅샷이다.
 type cairnStateResponse struct {
 	SlotCount        int               `json:"slot_count"`
 	MaxLayers        int               `json:"max_layers"`
@@ -91,6 +92,14 @@ func (h *Handler) Sync(c *gin.Context) {
 		log.Error().Err(err).Msg("player sync: update enlightenment_pts")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
+	}
+
+	// issue #34: sync 도 "접속 중" 신호이므로 저장형 cairn 성장을 lazy 로 적립한다(응답
+	// 스키마 무변경 — cairn 은 /player/state 에서만 내려간다). accrual UPDATE 는 이미 커밋됐고
+	// 404(플레이어 없음) 판정도 위에서 끝났으므로, 여기 성장은 best-effort 다: 실패해도 sync
+	// 성공(200)을 뒤집지 않고 다음 요청에서 재시도한다(앵커는 CAS 실패 시 불변).
+	if err := h.cairnCfg.ApplyGrowthTx(ctx, h.db, playerID, time.Now()); err != nil {
+		log.Warn().Err(err).Str("player_id", playerID).Msg("player sync: apply cairn growth (best-effort)")
 	}
 
 	c.JSON(http.StatusOK, syncResponse{EnlightenmentPts: newPts, LastSyncAt: newSyncAt})
@@ -157,29 +166,37 @@ func (h *Handler) GetState(c *gin.Context) {
 		return
 	}
 
-	// M2: WishCairn 슬롯 상태 — 매 read 시 derive.
+	// issue #34: WishCairn 저장형 슬롯 상태. 순서 = 슬롯 존재 보장 → ApplyGrowth(성장 적립)
+	// → LoadSlots(성장 반영된 저장 스냅샷).
 	// 기존 player 가 M2 마이그레이션 이후 valid JWT 로 들어오는 경우 InitializeSlots 가
 	// 안 거쳐졌을 수 있다 (initPlayerState 는 /auth/* 진입점에서만 호출). lazy init 보강.
-	slots, err := h.cairnCfg.LoadSlots(ctx, h.db, playerID, time.Now())
+	slots, err := h.cairnCfg.LoadSlots(ctx, h.db, playerID)
 	if err != nil {
 		log.Error().Err(err).Msg("player state: load cairn slots")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 		return
 	}
 	// partial init (1~4 슬롯만 있는 상태) 도 lazy 보강 — InitializeSlots 가 ON CONFLICT DO NOTHING
-	// 멱등이라 빠진 인덱스만 채워짐.
+	// 멱등이라 빠진 인덱스만 채워짐. 성장 전에 슬롯 존재를 보장한다.
 	if len(slots) < h.cairnCfg.SlotCount {
 		if err := h.cairnCfg.InitializeSlots(ctx, h.db, playerID, time.Now()); err != nil {
 			log.Error().Err(err).Msg("player state: lazy init cairn slots")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
 			return
 		}
-		slots, err = h.cairnCfg.LoadSlots(ctx, h.db, playerID, time.Now())
-		if err != nil {
-			log.Error().Err(err).Msg("player state: reload cairn slots after lazy init")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
-			return
-		}
+	}
+	// 저장형 성장 lazy 적용 — tx 로 감싸 read→CAS→write 원자성/동시성 안전 확보.
+	if err := h.cairnCfg.ApplyGrowthTx(ctx, h.db, playerID, time.Now()); err != nil {
+		log.Error().Err(err).Msg("player state: apply cairn growth")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
+	}
+	// 성장 반영된 최종 저장 스냅샷 로드.
+	slots, err = h.cairnCfg.LoadSlots(ctx, h.db, playerID)
+	if err != nil {
+		log.Error().Err(err).Msg("player state: reload cairn slots after growth")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error", "code": "INTERNAL_ERROR"})
+		return
 	}
 	resp.Cairn = cairnStateResponse{
 		SlotCount:        h.cairnCfg.SlotCount,

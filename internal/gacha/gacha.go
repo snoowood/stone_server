@@ -233,13 +233,19 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 		return nil, errCooldownActive
 	}
 
-	// 0. WishCairn slot 검증 + reset 을 atomic CAS UPDATE 로. complete 조건 (started_at <=
-	//    now - MaxLayers × interval) 인 슬롯만 reset. 동시 두 요청이 같은 slot 을 claim
-	//    하려고 해도 한 쪽만 affected=1, 다른 쪽은 affected=0 → CAIRN_INCOMPLETE.
-	threshold := now.Add(-time.Duration(h.cairnCfg.MaxLayers*h.cairnCfg.SpawnIntervalSeconds) * time.Second)
+	// issue #34: 완성 판정 전에 저장형 cairn 성장을 tx 내부에서 적립한다. pull 요청도
+	// "접속 중" 신호이므로 이 순간까지의 성장을 반영해야 방금 MaxLayers 에 도달한 슬롯을
+	// 즉시 뽑을 수 있다. 같은 tx 를 공유하므로 CAS 게이트가 이중 성장을 막는다.
+	if err := h.cairnCfg.ApplyGrowth(ctx, tx, playerID, now); err != nil {
+		return nil, err
+	}
+
+	// 0. WishCairn 완성 슬롯 claim + reset 을 atomic CAS UPDATE 로. layer_count >= MaxLayers
+	//    인 슬롯만 layer_count=0 으로 리셋(started_at/claimed_at 도 now 로 갱신). 동시 두
+	//    요청이 같은 slot 을 claim 해도 한 쪽만 affected=1, 다른 쪽은 affected=0 → INCOMPLETE.
 	res, err := tx.Exec(ctx,
-		"UPDATE wish_cairn_slots SET started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ? AND started_at <= ?",
-		nowStr, nowStr, playerID, slotIndex, threshold.Format(time.RFC3339),
+		"UPDATE wish_cairn_slots SET layer_count = 0, started_at = ?, claimed_at = ? WHERE player_id = ? AND slot_index = ? AND layer_count >= ?",
+		nowStr, nowStr, playerID, slotIndex, h.cairnCfg.MaxLayers,
 	)
 	if err != nil {
 		return nil, err
@@ -247,7 +253,7 @@ func (h *Handler) execPull(ctx context.Context, playerID string, slotIndex int) 
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		// slot 존재 여부 확인으로 INCOMPLETE / NOT_FOUND 구분.
-		_, err := cairn.LoadSlotStartedAt(ctx, tx, playerID, slotIndex)
+		_, err := cairn.LoadSlotLayerCount(ctx, tx, playerID, slotIndex)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errCairnSlotNotFound
 		}
