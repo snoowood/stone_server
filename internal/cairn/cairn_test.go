@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -349,6 +350,42 @@ func TestApplyGrowth_IncompleteExhaustion_NoOverCap(t *testing.T) {
 	gotAnchor, _ := readAnchor(t, db, "p")
 	if want := now.Format(time.RFC3339); gotAnchor != want {
 		t.Errorf("anchor = %q, want %q (advance full steps)", gotAnchor, want)
+	}
+}
+
+// (e-live) 실 DB 동시성: 같은 (player, now) 로 동시에 ApplyGrowthTx 를 불러도 정확히
+// steps 층만 증가해야 한다. MaxOpenConns=1 직렬화 + 앵커 CAS 게이트(승자만 슬롯 기록)의
+// 실체 검증 — fake 기반 CAS 패자 테스트(TestApplyGrowth_CASLoser_NoSlotWrite)의 통합판.
+func TestApplyGrowthTx_ConcurrentCallers_ExactlyStepsApplied(t *testing.T) {
+	db := newGrowthDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	interval := time.Duration(Default.SpawnIntervalSeconds) * time.Second
+	anchor := now.Add(-3 * interval) // steps=3
+	seedGrowth(t, db, "p", []int{0, 0, 0, 0, 0}, anchor.Format(time.RFC3339))
+
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = Default.ApplyGrowthTx(context.Background(), db, "p", now)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("caller %d: %v", i, err)
+		}
+	}
+
+	if got := sumLayers(readLayers(t, db, "p")); got != 3 {
+		t.Errorf("concurrent growth applied %d layers, want exactly 3 (no double growth, no loss)", got)
+	}
+	gotAnchor, _ := readAnchor(t, db, "p")
+	if want := now.Format(time.RFC3339); gotAnchor != want {
+		t.Errorf("anchor = %q, want %q", gotAnchor, want)
 	}
 }
 
