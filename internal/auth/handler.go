@@ -195,11 +195,15 @@ func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, pl
 // balance (enlightenment_pts) is left untouched — the offline gap is discarded, not
 // credited; online idle keeps accruing via the in-session /player/sync (5min) loop.
 //
+// issue #34: the same reset also re-anchors cairn_last_growth_at = now so WishCairn
+// growth is likewise dropped for the offline window (성장은 접속 중에만 — 오프라인
+// 미성장). Both clocks share this single UPDATE and this single call site.
+//
 // Call it LAST, only once the session is fully established (enforceSingleSession +
 // storeRefreshToken both succeeded). A login rejected (LOGIN_IN_PROGRESS) or failing
 // at any earlier step never reaches this, so it cannot move the anchor of an
 // already-active session. /auth/refresh deliberately does not call this — a
-// mid-session token refresh must not drop online accrual.
+// mid-session token refresh must not drop online accrual (nor cairn growth).
 //
 // Tradeoff: a *successful* re-login that evicts a live session (e.g. device takeover)
 // does re-anchor, dropping up to one /player/sync interval (~5min) of that session's
@@ -208,8 +212,9 @@ func initPlayerState(ctx context.Context, db store.DB, cairnCfg cairn.Config, pl
 // last_sync_at, and reset folds in no accrual before overwriting the clock.
 func resetAccrualAnchor(ctx context.Context, db store.DB, playerID string) error {
 	const q = `UPDATE player_states
-	              SET last_sync_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-	                  updated_at   = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	              SET last_sync_at         = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+	                  cairn_last_growth_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+	                  updated_at           = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	            WHERE player_id = ?`
 	_, err := db.Exec(ctx, q, playerID)
 	return err

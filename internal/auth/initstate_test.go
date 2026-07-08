@@ -71,6 +71,39 @@ func TestResetAccrualAnchor_DropsOfflineGapWithoutCrediting(t *testing.T) {
 	}
 }
 
+// issue #34: resetAccrualAnchor re-anchors cairn_last_growth_at = now on session start
+// (shared with the last_sync_at reset) so the offline WishCairn growth window is dropped
+// (성장은 접속 중에만 — 오프라인 미성장). AuthSteam/AuthDev/DevToken share this call site.
+func TestResetAccrualAnchor_ReanchorsCairnGrowthClock(t *testing.T) {
+	db, _ := newTestDB(t)
+	ctx := context.Background()
+	playerID := seedPlayer(t, db)
+
+	// Simulate a stale cairn growth clock 1h in the past (returning-offline player).
+	if _, err := db.Exec(ctx,
+		`UPDATE player_states SET cairn_last_growth_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 hour') WHERE player_id = ?`,
+		playerID,
+	); err != nil {
+		t.Fatalf("seed stale cairn clock: %v", err)
+	}
+
+	if err := resetAccrualAnchor(ctx, db, playerID); err != nil {
+		t.Fatalf("resetAccrualAnchor: %v", err)
+	}
+
+	var elapsedSec float64
+	if err := db.QueryRow(ctx,
+		`SELECT CAST(strftime('%s','now') AS REAL) - CAST(strftime('%s', cairn_last_growth_at) AS REAL)
+		   FROM player_states WHERE player_id = ?`,
+		playerID,
+	).Scan(&elapsedSec); err != nil {
+		t.Fatalf("read cairn clock: %v", err)
+	}
+	if elapsedSec > 5 {
+		t.Fatalf("cairn_last_growth_at not re-anchored: %.0fs elapsed since reset, want ~0 (offline growth window must be dropped)", elapsedSec)
+	}
+}
+
 // Finding-C guard: initPlayerState must be a pure idempotent row-create and must NOT
 // move an existing row's last_sync_at. The ECON-3 reset lives in resetAccrualAnchor,
 // applied only after the session is established — so a rejected re-login (which runs
